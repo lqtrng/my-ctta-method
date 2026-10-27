@@ -1,6 +1,6 @@
 # ReDi-FM with DINOv3: experiment log (source A → target B, OD/OC)
 
-Protocol: unchanged from the SAM method (`src/redifm_sam/adapt.py`). The data stream, 512×512 preprocessing, one Adam update per image (batch size 1, lr 1e-4), scoring after the update, per-image DSC, and the domain mean all come from the shared `src/common/` modules that both methods import. Every run starts from `checkpoints/domain_A_ResUNet34_last_20261017_215955.pth`. Target: domain B (REFUGE train, 400 images). Avg = (OD + OC) / 2.
+Protocol: unchanged from the SAM method (`src/redifm_sam/adapt.py`). The data stream, 512×512 preprocessing, one Adam update per image (batch size 1, lr 1e-4), scoring after the update, per-image DSC, and the domain mean all come from the shared `src/common/` modules that both methods import. Every run starts from `domain_A_ResUNet34_last_20261017_215955.pth` (originally `checkpoints/`, now `/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/`). Target: domain B (REFUGE train, 400 images). Avg = (OD + OC) / 2.
 
 Reference points on domain B:
 

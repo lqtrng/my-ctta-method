@@ -43,11 +43,11 @@ if str(SRC_DIR) not in sys.path:
 
 from common.data import DomainADataset  # noqa: E402
 from common.models import ResUnet34  # noqa: E402
-from common.paths import CHECKPOINT_DIR, DOMAIN_A_DIR  # noqa: E402
+from common.paths import CHECKPOINT_DIR, DOMAIN_A_DIR, PRETRAINED_RESUNET_CHECKPOINT  # noqa: E402
 from common.protocol import seed_everything  # noqa: E402
 
 
-INITIAL_CHECKPOINT = CHECKPOINT_DIR / "pretrain-ResUnet.pth"
+INITIAL_CHECKPOINT = PRETRAINED_RESUNET_CHECKPOINT
 
 
 @dataclass(frozen=True)

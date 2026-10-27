@@ -30,7 +30,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from common.models import NUM_CLASSES, ResUnet34  # noqa: E402
-from common.paths import PROJECT_DIR, SAM_CHECKPOINT  # noqa: E402
+from common.paths import DEFAULT_SOURCE_CHECKPOINT, PROJECT_DIR, SAM_CHECKPOINT  # noqa: E402
 from common.protocol import binary_dice_numpy, image_to_tensor  # noqa: E402
 from common.redifm import (  # noqa: E402
     largest_component,
@@ -42,9 +42,6 @@ from common.redifm import (  # noqa: E402
 DEFAULT_IMAGE = (
     PROJECT_DIR
     / "data/od_oc/domain_B_REFUGE_train/train/Images_Cropped/g0010.jpg"
-)
-DEFAULT_SOURCE_CHECKPOINT = (
-    PROJECT_DIR / "checkpoints/domain_A_ResUNet34_last_20261017_215955.pth"
 )
 DEFAULT_SAM_CHECKPOINT = SAM_CHECKPOINT
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent

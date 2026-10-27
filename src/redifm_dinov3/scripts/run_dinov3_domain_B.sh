@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 PY=.venv/bin/python
-HEAD=checkpoints/dinov3_vitl16_odoc_head_domain_A.pth
+HEAD=$($PY -c "import sys; sys.path.insert(0, 'src'); from redifm_dinov3.adapt import DEFAULT_HEAD_CHECKPOINT as h; print(h)")
 
 if [ ! -f "$HEAD" ]; then
   $PY src/redifm_dinov3/train_head.py --output "$HEAD"

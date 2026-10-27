@@ -18,7 +18,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from common.models import ResUnet34  # noqa: E402
-from common.paths import PROJECT_DIR  # noqa: E402
+from common.paths import DEFAULT_SOURCE_CHECKPOINT, PROJECT_DIR  # noqa: E402
 from source_training.train import DiceCrossEntropyLoss  # noqa: E402
 
 
@@ -32,9 +32,7 @@ DEFAULT_DOMAIN_A_MASK = (
 )
 DEFAULT_DOMAIN_C_IMAGE = PROJECT_DIR / "data/od_oc/domain_C_ORIGA/Images/004.jpg"
 DEFAULT_DOMAIN_C_MASK = PROJECT_DIR / "data/od_oc/domain_C_ORIGA/Masks/004.png"
-DEFAULT_CHECKPOINT = (
-    PROJECT_DIR / "checkpoints/domain_A_ResUNet34_last_20261017_215955.pth"
-)
+DEFAULT_CHECKPOINT = DEFAULT_SOURCE_CHECKPOINT
 DEFAULT_OUTPUT = Path(__file__).with_name("domain_shift_G-25-L_to_004.png")
 
 OD_COLOR = np.asarray((255, 145, 30), dtype=np.float32)

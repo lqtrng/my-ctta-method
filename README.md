@@ -5,8 +5,8 @@ Each method lives in its own folder under `src/`, with its outputs in the matchi
 | Folder | Method | Entry point | Results |
 |---|---|---|---|
 | `src/common/` | shared: paths, OD/OC data stream, ResUNet-34, online CTTA protocol, ReDi-FM prompts and losses | n/a | n/a |
-| `src/download/` | fetch external model weights (the only code that uses the network) | `download.py` | `$REDIFM_MODEL_DIR`, `checkpoints/` |
-| `src/source_training/` | train the ResUNet-34 source model on domain A | `train.py` | `checkpoints/` |
+| `src/download/` | fetch external model weights (the only code that uses the network) | `download.py` | model folder (see below) |
+| `src/source_training/` | train the ResUNet-34 source model on domain A | `train.py` | model folder, `ReDi-FM/` |
 | `src/source_only/` | source-only baseline (no adaptation) | `evaluate.py` | `results/source_only/` |
 | `src/medclip_samv2/` | zero-shot MedCLIP-SAMv2 baseline | `zero_shot.py` | `results/medclip_samv2/` |
 | `src/redifm_sam/` | ReDi-FM with frozen SAM ViT-H (paper method) | `adapt.py` | `results/redifm_sam/` |
@@ -21,4 +21,4 @@ src/redifm_dinov3/scripts/run_dinov3_all_domains.sh     # DINOv3, full stream, 3
 src/redifm_dinov3/scripts/run_dinov3_long_term.sh       # DINOv3, 3-round forgetting check
 ```
 
-Every method takes its evaluation protocol from `src/common/protocol.py` and its data stream from `src/common/data.py`, so the methods can be compared directly. Methods load weights only from the local paths in `src/common/paths.py` and never download. Downloaded foundation-model weights go in `/run/media/lqtrung/1tb-ssd/Model` when that folder exists, otherwise in `checkpoints/` (set `REDIFM_MODEL_DIR` to override). The dataset, the ResUNet-34 checkpoints and the fine-tuned MedCLIP-SAMv2 BiomedCLIP weights have no public download; place them by hand (`--check` lists where). The DINOv3 method is documented in `results/redifm_dinov3/WRITEUP.md` and `results/redifm_dinov3/EXPERIMENT_LOG.md`.
+Every method takes its evaluation protocol from `src/common/protocol.py` and its data stream from `src/common/data.py`, so the methods can be compared directly. Methods load weights only from the local paths in `src/common/paths.py` and never download. Weights live in the model folder: `/run/media/lqtrung/1tb-ssd/Model` when it exists, otherwise `checkpoints/` (set `REDIFM_MODEL_DIR` to override). Shared foundation models (DINOv3, BiomedCLIP config) sit at its top level; this project's checkpoints (ResUNet-34, SAM ViT-H, fine-tuned BiomedCLIP, DINOv3 decoder heads) sit in its `ReDi-FM/` subfolder. The dataset, the ResUNet-34 checkpoints and the fine-tuned MedCLIP-SAMv2 BiomedCLIP weights have no public download; place them by hand (`--check` lists where). The DINOv3 method is documented in `results/redifm_dinov3/WRITEUP.md` and `results/redifm_dinov3/EXPERIMENT_LOG.md`.

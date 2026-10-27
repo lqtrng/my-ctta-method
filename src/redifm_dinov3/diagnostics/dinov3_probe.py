@@ -7,7 +7,7 @@ from common.protocol import prepare_sample, image_to_tensor, binary_dice_numpy
 from common.redifm import structure_probabilities, largest_component
 from common.models import NUM_CLASSES, ResUnet34
 from common.data import build_domains
-from common.paths import MODEL_DIR, dinov3_weights
+from common.paths import DEFAULT_SOURCE_CHECKPOINT, MODEL_DIR, dinov3_weights
 
 dev = torch.device("cuda")
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 40
@@ -18,7 +18,7 @@ SCALE = float(sys.argv[4]) if len(sys.argv) > 4 else 2.0
 vfm = timm.create_model(arch.split(".")[0], pretrained=True, dynamic_img_size=True,
     pretrained_cfg_overlay=dict(file=str(dinov3_weights(MODEL_DIR, arch)))).to(dev).eval()
 src = ResUnet34(NUM_CLASSES); src.load_state_dict(torch.load(
-    "checkpoints/domain_A_ResUNet34_last_20261017_215955.pth", map_location="cpu", weights_only=True)); src.to(dev).eval()
+    DEFAULT_SOURCE_CHECKPOINT, map_location="cpu", weights_only=True)); src.to(dev).eval()
 MEAN = torch.tensor([0.485, 0.456, 0.406], device=dev).view(1, 3, 1, 1)
 STD = torch.tensor([0.229, 0.224, 0.225], device=dev).view(1, 3, 1, 1)
 
