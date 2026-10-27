@@ -1,0 +1,163 @@
+{
+  "protocol": "redifm_dinov3_long_term_ctta",
+  "source_domain": "A",
+  "config": {
+    "source_checkpoint": "/home/lqtrung/code/python/ReDi-FM/checkpoints/domain_A_ResUNet34_last_20261017_215955.pth",
+    "dinov3_dir": "/run/media/lqtrung/1tb-ssd/Model",
+    "dinov3_arch": "vit_large_patch16_dinov3.lvd1689m",
+    "output": "results/dinov3/long_term_seed0.json",
+    "save_adapted_checkpoint": null,
+    "domains": [
+      "B",
+      "C",
+      "D",
+      "E"
+    ],
+    "max_images": null,
+    "image_size": 512,
+    "learning_rate": 0.0001,
+    "pseudo_threshold": 0.5,
+    "entropy_threshold": 0.5,
+    "crop_scale": 2.0,
+    "min_crop": 96,
+    "crop_resolution": 512,
+    "temperature": 0.05,
+    "prototype_confidence": 0.9,
+    "background_prototypes": 4,
+    "background_margin": 0,
+    "cup_background": "all",
+    "candidates": "head",
+    "head_checkpoint": "/home/lqtrung/code/python/ReDi-FM/checkpoints/dinov3_vitl16_odoc_head_domain_A.pth",
+    "refine_iterations": 0,
+    "jitter_brightness": 0.2,
+    "jitter_contrast": 0.2,
+    "jitter_saturation": 0.2,
+    "jitter_hue": 0.05,
+    "erasing_probability": 0.5,
+    "erasing_min_scale": 0.02,
+    "erasing_max_scale": 0.2,
+    "seed": 0,
+    "device": "cuda",
+    "rounds": 3
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "do_a_dsc": 77.57187151346831,
+      "target_domains": [
+        {
+          "domain": "B",
+          "dataset": "REFUGE",
+          "images": 400,
+          "disc_dsc": 81.87314771559926,
+          "cup_dsc": 75.02281884453818,
+          "mean_dsc": 78.44798328006873
+        },
+        {
+          "domain": "C",
+          "dataset": "ORIGA",
+          "images": 650,
+          "disc_dsc": 84.15430470409461,
+          "cup_dsc": 69.84023667157544,
+          "mean_dsc": 76.99727068783501
+        },
+        {
+          "domain": "D",
+          "dataset": "REFUGE-Validation/Test",
+          "images": 800,
+          "disc_dsc": 80.72471684660252,
+          "cup_dsc": 78.48582707337093,
+          "mean_dsc": 79.60527195998672
+        },
+        {
+          "domain": "E",
+          "dataset": "Drishti-GS",
+          "images": 101,
+          "disc_dsc": 83.90024798152392,
+          "cup_dsc": 66.57367227044159,
+          "mean_dsc": 75.23696012598276
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "do_a_dsc": 75.97337799766146,
+      "target_domains": [
+        {
+          "domain": "B",
+          "dataset": "REFUGE",
+          "images": 400,
+          "disc_dsc": 79.87140407474617,
+          "cup_dsc": 73.54564534059082,
+          "mean_dsc": 76.70852470766849
+        },
+        {
+          "domain": "C",
+          "dataset": "ORIGA",
+          "images": 650,
+          "disc_dsc": 85.20176297032125,
+          "cup_dsc": 69.1391422169056,
+          "mean_dsc": 77.17045259361342
+        },
+        {
+          "domain": "D",
+          "dataset": "REFUGE-Validation/Test",
+          "images": 800,
+          "disc_dsc": 79.57541668566292,
+          "cup_dsc": 78.10634056010615,
+          "mean_dsc": 78.84087862288453
+        },
+        {
+          "domain": "E",
+          "dataset": "Drishti-GS",
+          "images": 101,
+          "disc_dsc": 80.11756807062642,
+          "cup_dsc": 62.229744062332415,
+          "mean_dsc": 71.17365606647942
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "do_a_dsc": 77.38951451968403,
+      "target_domains": [
+        {
+          "domain": "B",
+          "dataset": "REFUGE",
+          "images": 400,
+          "disc_dsc": 80.89546755202016,
+          "cup_dsc": 73.35730641282376,
+          "mean_dsc": 77.12638698242196
+        },
+        {
+          "domain": "C",
+          "dataset": "ORIGA",
+          "images": 650,
+          "disc_dsc": 85.67796321920922,
+          "cup_dsc": 69.58679700265249,
+          "mean_dsc": 77.63238011093085
+        },
+        {
+          "domain": "D",
+          "dataset": "REFUGE-Validation/Test",
+          "images": 800,
+          "disc_dsc": 79.97582913078224,
+          "cup_dsc": 78.84109586979247,
+          "mean_dsc": 79.40846250028736
+        },
+        {
+          "domain": "E",
+          "dataset": "Drishti-GS",
+          "images": 101,
+          "disc_dsc": 84.6760325204821,
+          "cup_dsc": 66.1056244497098,
+          "mean_dsc": 75.39082848509595
+        }
+      ]
+    }
+  ],
+  "average_dsc": 76.97825467693794,
+  "source_only_dsc": 53.66858516987877,
+  "gain_dsc": 23.30966950705917,
+  "performance_degradation": 0.5936168365303729
+}

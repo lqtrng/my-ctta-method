@@ -1,0 +1,53 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local environment variables
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Large local datasets and model weights
+data/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+*.part
+
+# Third-party papers (reference only)
+*.pdf
+
+# Temporary artifacts (results/ is tracked: experiment log, write-up, metrics)
+tmp/
+output/
+logs/
+wandb/
+runs/
+
+# Notebook checkpoints
+.ipynb_checkpoints/

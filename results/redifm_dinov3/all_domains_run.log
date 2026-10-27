@@ -1,0 +1,24 @@
+Domain B (REFUGE, n=400): OD=81.87, OC=75.02, Mean=78.45
+Domain C (ORIGA, n=650): OD=84.15, OC=69.84, Mean=77.00
+Domain D (REFUGE-Validation/Test, n=800): OD=80.72, OC=78.49, Mean=79.61
+Domain E (Drishti-GS, n=101): OD=83.90, OC=66.57, Mean=75.24
+Do. A DSC (unweighted B/C/D/E domain mean): 77.57
+Pooled target-image DSC (diagnostic only): 78.27
+Domain B (REFUGE, n=400): OD=81.85, OC=75.97, Mean=78.91
+Domain C (ORIGA, n=650): OD=85.30, OC=69.76, Mean=77.53
+Domain D (REFUGE-Validation/Test, n=800): OD=79.64, OC=78.17, Mean=78.91
+Domain E (Drishti-GS, n=101): OD=83.70, OC=64.96, Mean=74.33
+Do. A DSC (unweighted B/C/D/E domain mean): 77.42
+Pooled target-image DSC (diagnostic only): 78.21
+Domain B (REFUGE, n=400): OD=82.24, OC=76.29, Mean=79.27
+Domain C (ORIGA, n=650): OD=85.60, OC=70.99, Mean=78.30
+Domain D (REFUGE-Validation/Test, n=800): OD=80.06, OC=78.21, Mean=79.14
+Domain E (Drishti-GS, n=101): OD=82.78, OC=65.05, Mean=73.92
+Do. A DSC (unweighted B/C/D/E domain mean): 77.65
+Pooled target-image DSC (diagnostic only): 78.61
+Mean over seeds ['0', '1', '2']:
+  Domain B (REFUGE): DISC=81.99, CUP=75.76, MEAN=78.88
+  Domain C (ORIGA): DISC=85.02, CUP=70.20, MEAN=77.61
+  Domain D (REFUGE-Validation/Test): DISC=80.14, CUP=78.29, MEAN=79.22
+  Domain E (Drishti-GS): DISC=83.46, CUP=65.53, MEAN=74.49
+  Do. A DSC: 77.55 +- 0.10  (77.57, 77.42, 77.65)
