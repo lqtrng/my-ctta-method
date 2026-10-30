@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Visualize ReDi-FM's OD/OC point prompts and all SAM candidates.
 
-The example reproduces the prompting path in redifm_sam/adapt.py:
+The example reproduces the prompting path in methods/redifm_sam.py:
 
 1. A frozen source ResUNet-34 predicts optic-disc (OD) and optic-cup (OC)
    probabilities.

@@ -1,11 +1,12 @@
-#!/usr/bin/env python3
 """ReDi-FM continual test-time adaptation with a frozen DINOv3 foundation model.
 
-This is a variant of ``redifm_sam/adapt.py`` in which the frozen,
+This is a variant of ``methods/redifm_sam.py`` in which the frozen,
 promptable SAM is replaced by a frozen, self-supervised DINOv3 ViT.  Everything
 that defines the evaluation protocol (data stream, preprocessing, one Adam
 update per image at batch size one, scoring after the update, per-image DSC)
-is imported unchanged from the original script.
+is shared with every other method through ``src/evaluate.py``:
+
+    python src/evaluate.py --method redifm_dinov3 [--task prostate] [--arch nnunet] [--rounds 3]
 
 DINOv3 has no mask decoder, so Section 3.2 of the paper is re-expressed for a
 feature backbone:
@@ -13,7 +14,7 @@ feature backbone:
 * Prompting.  The source pseudo-label defines a region of interest around the
   optic disc, which is cropped and encoded by DINOv3 at high resolution.
 * Candidates (``--candidates``).  ``head`` (default): a small decoder trained
-  once on labeled source domain A (``train_head.py``) maps the frozen
+  once on labeled source domain A (``training/train_dinov3_head.py``) maps the frozen
   DINOv3 tokens of the crop to OD/OC probabilities -- the counterpart of SAM's
   pretrained mask decoder.  ``prototype``: training-free alternative in which
   the structure-aware center and hard points (Equations 2-4) and the confident
@@ -30,42 +31,32 @@ feature backbone:
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
 from torch import nn
-from tqdm import tqdm
 
-SRC_DIR = Path(__file__).resolve().parents[1]
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from common.data import Sample, atomic_json_write  # noqa: E402
-from common.models import ARCHITECTURES, build_network  # noqa: E402
-from common.paths import (  # noqa: E402
+from common.dinov3 import IMAGENET_MEAN, IMAGENET_STD, SegmentationHead
+from common.models import ARCHITECTURES, build_network
+from common.paths import (
     DINOV3_ARCH,
     DINOV3_HEAD_CHECKPOINT,
     MODEL_DIR,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
-    RESULTS_DIR,
     SOURCE_CHECKPOINTS,
     dinov3_weights,
     require_file,
 )
-from common.protocol import (  # noqa: E402
+from common.protocol import (
     binary_dice_numpy,
     image_to_tensor,
     make_augmentation,
     predict_after_update,
-    prepare_sample,
-    seed_everything,
 )
-from common.redifm import (  # noqa: E402
+from common.redifm import (
     StepDiagnostics,
     confidence_weight,
     consensus_score,
@@ -76,39 +67,18 @@ from common.redifm import (  # noqa: E402
     structure_probabilities,
     weighted_binary_segmentation_loss,
 )
-from common.tasks import TASKS, Task  # noqa: E402
-from common.tracking import log_result, tracked_run  # noqa: E402
-from redifm_dinov3.train_head import SegmentationHead  # noqa: E402
+from common.tasks import TASKS, Task
 
 
-DEFAULT_DINOV3_DIR = MODEL_DIR
-DEFAULT_DINOV3_ARCH = DINOV3_ARCH
-DEFAULT_OUTPUT = RESULTS_DIR / "redifm_dinov3/redifm_dinov3_domain_A.json"
-DEFAULT_HEAD_CHECKPOINT = DINOV3_HEAD_CHECKPOINT
-HEAD_CHECKPOINTS = {"odoc": DEFAULT_HEAD_CHECKPOINT, "prostate": PROSTATE_DINOV3_HEAD_CHECKPOINT}
-METHOD_FOLDERS = {"resunet34": "redifm_dinov3", "nnunet": "redifm_dinov3_nnunet"}
+HEAD_CHECKPOINTS = {"odoc": DINOV3_HEAD_CHECKPOINT, "prostate": PROSTATE_DINOV3_HEAD_CHECKPOINT}
+# 0140.pdf Table 1, ReDi-FM with SAM, source domain A.
+PAPER_DO_A = {"odoc": 73.11, "prostate": 66.10}
 
 
-def resolve_task_defaults(args: argparse.Namespace) -> argparse.Namespace:
-    """Fill options left unset with the defaults of ``--task`` and ``--arch``."""
-    task = TASKS[args.task]
-    if args.source_checkpoint is None:
-        args.source_checkpoint = SOURCE_CHECKPOINTS[(args.task, args.arch)]
-    if args.head_checkpoint is None:
-        args.head_checkpoint = HEAD_CHECKPOINTS[args.task]
-    if args.domains is None:
-        args.domains = list(task.target_domains)
-    if args.image_size is None:
-        args.image_size = task.image_size
-    if args.output is None:
-        folder = METHOD_FOLDERS[args.arch]
-        prefix = "" if args.task == "odoc" else f"{args.task}_"
-        args.output = RESULTS_DIR / folder / f"{prefix}{folder}_domain_A.json"
-    return args
-
-
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
+def resolve_checkpoints(args: argparse.Namespace, task: Task) -> None:
+    """Fill checkpoints left unset with the ones of ``--task`` and ``--arch``."""
+    args.source_checkpoint = args.source_checkpoint or SOURCE_CHECKPOINTS[(task.name, args.arch)]
+    args.head_checkpoint = args.head_checkpoint or HEAD_CHECKPOINTS[task.name]
 
 
 class DinoV3Segmenter:
@@ -398,74 +368,13 @@ def adaptation_step(
     return diagnostics, foundation_diagnostics
 
 
-def evaluate_stream(
-    source_model: nn.Module,
-    target_model: nn.Module,
-    segmenter: DinoV3Segmenter,
-    optimizer: torch.optim.Optimizer,
-    domains: dict[str, list[Sample]],
-    device: torch.device,
-    args: argparse.Namespace,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    task = TASKS[args.task]
-    augmentation = make_augmentation(args)
-    results: list[dict[str, Any]] = []
-    per_image: list[dict[str, Any]] = []
-
-    for domain, samples in domains.items():
-        rows: list[dict[str, float]] = []
-        for sample in tqdm(samples, desc=f"ReDi-FM/DINOv3 domain {domain}"):
-            image, target = prepare_sample(sample, args.image_size)
-            image_tensor = image_to_tensor(image, device)
-            target = target.to(device)
-
-            step, foundation = adaptation_step(
-                source_model,
-                target_model,
-                segmenter,
-                optimizer,
-                augmentation,
-                image,
-                image_tensor,
-                args,
-            )
-            prediction = predict_after_update(target_model, image_tensor)[0]
-            scores = task.score(prediction, target)
-            rows.append(scores)
-            per_image.append(
-                {
-                    "domain": domain,
-                    "image": sample.identifier,
-                    **scores,
-                    "mean_dsc": float(np.mean(list(scores.values()))),
-                    "consensus": step.consensus,
-                    **foundation,
-                }
-            )
-
-        result = task.domain_summary(domain, samples[0].dataset, rows)
-        results.append(result)
-        print(task.describe(result))
-    return results, per_image
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", choices=list(TASKS), default="odoc",
-                        help="Benchmark: OD/OC (target B-E) or prostate (target B-F)")
+def add_arguments(parser: argparse._ArgumentGroup) -> None:
     parser.add_argument("--arch", choices=list(ARCHITECTURES), default="resunet34",
                         help="Source/target segmentation network")
     parser.add_argument("--source-checkpoint", type=Path,
                         help="Default: the domain-A checkpoint of --task and --arch")
-    parser.add_argument("--dinov3-dir", type=Path, default=DEFAULT_DINOV3_DIR)
-    parser.add_argument("--dinov3-arch", default=DEFAULT_DINOV3_ARCH)
-    parser.add_argument("--output", type=Path,
-                        help="Default: results/<method>/[<task>_]<method>_domain_A.json")
-    parser.add_argument("--save-adapted-checkpoint", type=Path)
-    parser.add_argument("--domains", nargs="+", choices=list("BCDEF"),
-                        help="Target domains (default: all targets of --task)")
-    parser.add_argument("--max-images", type=int, help="Limit images per domain for a smoke test")
-    parser.add_argument("--image-size", type=int, help="Default: 512 (OD/OC) or 384 (prostate)")
+    parser.add_argument("--dinov3-dir", type=Path, default=MODEL_DIR)
+    parser.add_argument("--dinov3-arch", default=DINOV3_ARCH)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--pseudo-threshold", type=float, default=0.5)
     parser.add_argument(
@@ -501,81 +410,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--erasing-probability", type=float, default=0.5)
     parser.add_argument("--erasing-min-scale", type=float, default=0.02)
     parser.add_argument("--erasing-max-scale", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    return parser
 
 
-def parse_args() -> argparse.Namespace:
-    return resolve_task_defaults(build_parser().parse_args())
-
-
-def load_models(
-    args: argparse.Namespace, device: torch.device
-) -> tuple[nn.Module, nn.Module, DinoV3Segmenter, torch.optim.Optimizer]:
-    resolve_task_defaults(args)
+def build(args: argparse.Namespace, task: Task):
+    resolve_checkpoints(args, task)
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     state_dict = torch.load(args.source_checkpoint, map_location="cpu", weights_only=True)
-    source_model = build_network(args.arch, TASKS[args.task].num_classes, args.image_size)
+    source_model = build_network(args.arch, task.num_classes, args.image_size)
     source_model.load_state_dict(state_dict, strict=True)
     source_model.requires_grad_(False).to(device).eval()
-    target_model = build_network(args.arch, TASKS[args.task].num_classes, args.image_size)
+    target_model = build_network(args.arch, task.num_classes, args.image_size)
     target_model.load_state_dict(state_dict, strict=True)
     target_model.to(device).train()
     segmenter = DinoV3Segmenter(args, device)
     optimizer = torch.optim.Adam(target_model.parameters(), lr=args.learning_rate)
-    return source_model, target_model, segmenter, optimizer
+    augmentation = make_augmentation(args)
+    print(f"Checkpoint: {Path(args.source_checkpoint).resolve()} ({args.arch})")
+    print(f"Foundation model: DINOv3 {args.dinov3_arch} on {device}; one online update per image")
 
-
-def main(args: argparse.Namespace) -> None:
-    resolve_task_defaults(args)
-    task = TASKS[args.task]
-    seed_everything(args.seed)
-    device = torch.device(args.device)
-    domains = task.build_domains(args.domains, args.max_images)
-
-    source_model, target_model, segmenter, optimizer = load_models(args, device)
-
-    print(f"Checkpoint: {args.source_checkpoint.resolve()} ({args.arch})")
-    print(f"Foundation model: DINOv3 {args.dinov3_arch} on {device}")
-    print("Protocol: ReDi-FM continual test-time adaptation (one online update per image)")
-    print(f"Task: {task.name}, target domains {'/'.join(args.domains)}")
-    if task.name == "odoc":
-        print("Metric: mean per-image DSC; OD includes the OC region")
-    else:
-        print("Metric: mean per-image prostate DSC")
-
-    with tracked_run(METHOD_FOLDERS[args.arch], args):
-        results, per_image = evaluate_stream(
-            source_model, target_model, segmenter, optimizer, domains, device, args
+    def segment(image: Image.Image) -> tuple[torch.Tensor, dict]:
+        image_tensor = image_to_tensor(image, device)
+        step, foundation = adaptation_step(
+            source_model, target_model, segmenter, optimizer, augmentation, image, image_tensor, args
         )
-        do_a = float(np.mean([result["mean_dsc"] for result in results]))
-        pooled_image_mean = float(np.mean([row["mean_dsc"] for row in per_image])) * 100.0
-        print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
-        print(f"Pooled target-image DSC (diagnostic only): {pooled_image_mean:.2f}")
+        prediction = predict_after_update(target_model, image_tensor)[0]
+        return prediction, {"consensus": step.consensus, **foundation}
 
-        config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-        payload = {
-            "protocol": "redifm_dinov3_continual_test_time_adaptation",
-            "task": task.name,
-            "source_domain": "A",
-            "config": config,
-            "target_domains": results,
-            "do_a_dsc": do_a,
-            "pooled_target_image_dsc": pooled_image_mean,
-            # 0140.pdf Table 1, ReDi-FM with SAM, source domain A.
-            "paper_redifm_do_a_reference": {"odoc": 73.11, "prostate": 66.10}[task.name],
-            "per_image": per_image,
-        }
-        atomic_json_write(args.output, payload)
-        log_result(payload, args.output)
-        print(f"Saved: {args.output.resolve()}")
-
-        if args.save_adapted_checkpoint is not None:
-            destination = args.save_adapted_checkpoint.resolve()
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(target_model.state_dict(), destination)
-            print(f"Saved adapted target model: {destination}")
-
-
-if __name__ == "__main__":
-    main(parse_args())
+    return segment

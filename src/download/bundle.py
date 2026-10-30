@@ -6,6 +6,7 @@ It holds exactly the files the methods read and nothing else:
 * ``data/od_oc/``: the OD/OC benchmark, domains A-E (Drishti-GS as a zip with
   only its own members);
 * ``data/prostate-6/``: the prepared six-site prostate slices (``prepare_prostate.py``);
+* ``data/polyp-4/``: the prepared four-dataset polyp benchmark (``prepare_polyp.py``);
 * ``checkpoints/``: this project's trained files (source models, DINOv3 heads,
   the ResUNet-34 initialization).
 
@@ -45,6 +46,7 @@ from common.paths import (  # noqa: E402
     DRISHTI_ARCHIVE,
     KAGGLE_DATASET,
     ON_KAGGLE,
+    POLYP_DIR,
     PRETRAINED_RESUNET_CHECKPOINT,
     PROJECT_DIR,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
@@ -120,10 +122,14 @@ def build(staging: Path) -> None:
             for member in source.infolist():
                 if member.filename.startswith("Drishti-GS/"):
                     target.writestr(member, source.read(member))
-    for domain in sorted(PROSTATE_DIR.glob("domain_*")):
-        for kind in ("Images", "Masks"):
-            _place_tree(domain / kind, staging / bundle_path(domain / kind))
-    _place(PROSTATE_DIR / "manifest.json", staging / bundle_path(PROSTATE_DIR / "manifest.json"))
+    for prepared in (PROSTATE_DIR, POLYP_DIR):
+        if not (prepared / "manifest.json").is_file():
+            print(f"Not in the bundle (run its prepare_*.py first): {prepared}")
+            continue
+        for domain in sorted(prepared.glob("domain_*")):
+            for kind in ("Images", "Masks"):
+                _place_tree(domain / kind, staging / bundle_path(domain / kind))
+        _place(prepared / "manifest.json", staging / bundle_path(prepared / "manifest.json"))
     for path in CHECKPOINTS:
         if path.is_file():
             _place(path, staging / bundle_path(path))
@@ -132,7 +138,7 @@ def build(staging: Path) -> None:
     (staging / "dataset-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     size = sum(file.stat().st_size for file in staging.rglob("*") if file.is_file())
     print(f"Staged {size / 1e9:.1f} GB in {staging} for Kaggle dataset {KAGGLE_DATASET}.")
-    print("Keep the dataset private: the OD/OC datasets have their own licenses.")
+    print("Keep the dataset private: the OD/OC and polyp datasets have their own licenses.")
     print(f"Upload: kaggle datasets create -p {staging} --dir-mode zip")
 
 

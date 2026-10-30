@@ -20,6 +20,9 @@ DRISHTI_ARCHIVE = DATA_DIR / "FunduSegmenter_Datasets.zip"
 # Six-site prostate MRI benchmark (0140.pdf, Section 4.1), domains A-F.
 PROSTATE_DIR = PROJECT_DIR / "data/prostate-6"
 PROSTATE_ARCHIVE = PROSTATE_DIR / "raw/Processed_data_nii.zip"
+# Four-dataset polyp benchmark (0140.pdf, Section 4.1), domains A-D.
+POLYP_DIR = PROJECT_DIR / "data/polyp-4"
+POLYP_RAW_DIR = POLYP_DIR / "raw"
 RESULTS_DIR = PROJECT_DIR / "results"
 
 # MLflow store for every run (``mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db``).
@@ -27,9 +30,9 @@ RESULTS_DIR = PROJECT_DIR / "results"
 MLFLOW_DIR = PROJECT_DIR / "mlruns"
 
 # Private Kaggle dataset with the files that have no public download: the OD/OC
-# data, the prepared prostate data and this project's checkpoints.  It is built
-# by ``download/kaggle_bundle.py`` and fetched by ``download.py bundle``.
-KAGGLE_DATASET = os.environ.get("REDIFM_KAGGLE_DATASET", "lqtrung/redifm-assets")
+# data, the prepared prostate and polyp data and this project's checkpoints.  It is built
+# by ``download/bundle.py`` and fetched by ``download/download.py``.
+KAGGLE_DATASET = os.environ.get("REDIFM_KAGGLE_DATASET", "wiedergeburt/redifm-assets")
 ON_KAGGLE = Path("/kaggle/working").is_dir()
 
 # Model weights and checkpoints are kept on the external SSD when it is mounted,

@@ -40,6 +40,7 @@ from common.paths import (  # noqa: E402
     MEDDINOV3_CHECKPOINT,
     MEDDINOV3_REPO_DIR,
     MODEL_DIR,
+    POLYP_DIR,
     PRETRAINED_RESUNET_CHECKPOINT,
     PROSTATE_ARCHIVE,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
@@ -118,6 +119,14 @@ def fetch_prostate(path: Path) -> None:
     subprocess.run([sys.executable, str(script)], check=True)
 
 
+def fetch_polyp(path: Path) -> None:
+    """The four public polyp datasets, then the OD/OC-style per-domain layout."""
+    import subprocess
+
+    script = Path(__file__).resolve().parent / "prepare_polyp.py"
+    subprocess.run([sys.executable, str(script)], check=True)
+
+
 def fetch_sam(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
@@ -149,7 +158,8 @@ ASSETS = {
     # Asset bundle (private Kaggle dataset).
     "data": Asset(DATA_DIR, "all OD/OC methods", lambda _: from_bundle(DATA_DIR)),
     "prostate": Asset(PROSTATE_DIR / "manifest.json", "prostate experiments", lambda _: from_bundle(PROSTATE_DIR)),
-    "pretrained-resunet": checkpoint(PRETRAINED_RESUNET_CHECKPOINT, "source_training", trainable=False),
+    "polyp": Asset(POLYP_DIR / "manifest.json", "polyp experiments", lambda _: from_bundle(POLYP_DIR)),
+    "pretrained-resunet": checkpoint(PRETRAINED_RESUNET_CHECKPOINT, "training/train_source.py", trainable=False),
     **{
         f"source-{task}-{arch}": checkpoint(path, f"every {task} method with --arch {arch}")
         for (task, arch), path in SOURCE_CHECKPOINTS.items()
@@ -160,6 +170,9 @@ ASSETS = {
     # extras/ only.
     "prostate-public": Asset(
         PROSTATE_ARCHIVE, "regenerating data/prostate-6 with prepare_prostate.py", fetch_prostate, optional=True
+    ),
+    "polyp-public": Asset(
+        POLYP_DIR / "raw", "regenerating data/polyp-4 with prepare_polyp.py", fetch_polyp, optional=True
     ),
     "meddinov3": Asset(MEDDINOV3_CHECKPOINT, "meddinov3", fetch_meddinov3, optional=True),
     "meddinov3-code": Asset(MEDDINOV3_REPO_DIR, "meddinov3", fetch_meddinov3_code, optional=True),

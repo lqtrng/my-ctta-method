@@ -1,13 +1,13 @@
 # ReDi-FM with DINOv3: experiment log (source A → target B, OD/OC)
 
-Protocol: unchanged from the SAM method (`src/redifm_sam/adapt.py`). The data stream, 512×512 preprocessing, one Adam update per image (batch size 1, lr 1e-4), scoring after the update, per-image DSC, and the domain mean all come from the shared `src/common/` modules that both methods import. Every run starts from `domain_A_ResUNet34_last_20261017_215955.pth` (originally `checkpoints/`, now `/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/`). Target: domain B (REFUGE train, 400 images). Avg = (OD + OC) / 2.
+Protocol: unchanged from the SAM method (`src/methods/redifm_sam.py`). The data stream, 512×512 preprocessing, one Adam update per image (batch size 1, lr 1e-4), scoring after the update, per-image DSC, and the domain mean all come from the shared `src/common/` modules that both methods import. Every run starts from `domain_A_ResUNet34_last_20261017_215955.pth` (originally `checkpoints/`, now `/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/`). Target: domain B (REFUGE train, 400 images). Avg = (OD + OC) / 2.
 
 Reference points on domain B:
 
 | Method | OD | OC | Avg |
 |---|---|---|---|
-| Source only (`results/source_only/baseline_no_adaptation_domain_A.json`) | 62.39 | 46.69 | 54.54 |
-| ReDi-FM with SAM ViT-H (`results/redifm_sam/proposed_redifm_domain_A.json`) | 84.52 | 60.41 | 72.46 |
+| Source only (`results/source_only/source_only_domain_A.json`) | 62.39 | 46.69 | 54.54 |
+| ReDi-FM with SAM ViT-H (`results/redifm_sam/redifm_sam_domain_A.json`) | 84.52 | 60.41 | 72.46 |
 
 ## Environment decisions
 
@@ -25,13 +25,13 @@ Reference points on domain B:
 | 02 | `exp02_head.json` | `--candidates head`: decoder trained on domain A, last DINOv3 block, seed 42 | 81.94 | 75.05 | **78.50** |
 | 03 | `exp03_head_seed{0,1,2}.json` | as 02, seeds 0/1/2 | 81.87 / 81.85 / 82.24 | 75.02 / 75.97 / 76.29 | 78.45 / 78.91 / 79.27 |
 | 04 | `exp04_head_l11-17-23.json` | as 02, decoder on blocks 11+17+23 | 81.51 | 74.37 | 77.94 |
-| final | `final_domain_B_seed{0,1,2}.json` (`src/redifm_dinov3/scripts/run_dinov3_domain_B.sh`) | as 03 (default config) | **81.99** | **75.76** | **78.88 ± 0.41** |
+| final | `final_domain_B_seed{0,1,2}.json` (`src/evaluate.py --method redifm_dinov3 --domains B --seed {0,1,2}`) | as 03 (default config) | **81.99** | **75.76** | **78.88 ± 0.41** |
 
 The final configuration beats the >74 target on every seed.
 
 ## Full Domain-A protocol (continual stream B → C → D → E, no reset)
 
-Command: `src/redifm_dinov3/scripts/run_dinov3_all_domains.sh`. Outputs: `final_all_domains_seed{0,1,2}.json` and `all_domains_run.log`. The config is the final one above, the same as the original script's `--domains B C D E` run. Values are averaged over seeds 0/1/2.
+Command: `./reproduce.sh odoc` (the ReDi-FM + DINOv3 loop over seeds 0/1/2). Outputs: `final_all_domains_seed{0,1,2}.json` and `all_domains_run.log`. The config is the final one above, the same as the original script's `--domains B C D E` run. Values are averaged over seeds 0/1/2.
 
 | Domain | OD | OC | Mean | SAM ReDi-FM (mean) |
 |---|---|---|---|---|
@@ -45,7 +45,7 @@ Pooled per-image DSC (diagnostic): 78.27 / 78.21 / 78.61. Domain E is the only d
 
 ## Long-term CTTA / catastrophic forgetting (0140.pdf Table 3 protocol)
 
-Command: `src/redifm_dinov3/scripts/run_dinov3_long_term.sh` (`src/redifm_dinov3/long_term.py`). The run is 3 rounds of B → C → D → E. The target model and Adam state are never reset. The per-image protocol is the same as above, with the final config. Output: `long_term_seed0.json`.
+Command: `./reproduce.sh long_term` (`src/evaluate.py --method redifm_dinov3 --rounds 3`). The run is 3 rounds of B → C → D → E. The target model and Adam state are never reset. The per-image protocol is the same as above, with the final config. Output: `long_term_seed0.json`.
 
 **Only seed 0 was run.** The user asked to stop after seed 0, so seeds 1 and 2 are not done.
 

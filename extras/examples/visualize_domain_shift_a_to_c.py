@@ -19,7 +19,7 @@ if str(SRC_DIR) not in sys.path:
 
 from common.models import ResUnet34  # noqa: E402
 from common.paths import DEFAULT_SOURCE_CHECKPOINT, PROJECT_DIR  # noqa: E402
-from source_training.train import DiceCrossEntropyLoss  # noqa: E402
+from training.train_source import DiceCrossEntropyLoss  # noqa: E402
 
 
 DEFAULT_DOMAIN_A_IMAGE = (

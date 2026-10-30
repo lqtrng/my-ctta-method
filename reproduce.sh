@@ -18,7 +18,8 @@
 #
 # Environment:
 #   PYTHON                 interpreter (default: .venv/bin/python if present, else python)
-#   SEEDS                  seeds of ReDi-FM + DINOv3 on OD/OC (default "0 1 2")
+#   SEEDS                  seeds of ReDi-FM + DINOv3 on OD/OC (default "0 1 2";
+#                          long_term default "0")
 #   REDIFM_KAGGLE_DATASET  asset bundle id (default in src/common/paths.py)
 #   REDIFM_MLFLOW=0        turn MLflow tracking off
 set -euo pipefail
@@ -45,31 +46,56 @@ stage_assets() {
   $PY src/download/download.py --check || true
 }
 
+# Train a checkpoint named in common/paths.py if the asset bundle did not provide it.
+train_if_missing() {
+  local file
+  file=$(path "$1"); shift
+  [ -f "$file" ] || "$@" --output "$file"
+}
+
 stage_odoc() {
-  local source
-  source=$(path DEFAULT_SOURCE_CHECKPOINT)
-  if [ ! -f "$source" ]; then
-    $PY src/source_training/train.py --output "$source"
-  fi
-  $PY src/source_only/evaluate.py
-  bash src/nnunet_only/scripts/run_nnunet_only.sh
-  $PY src/redifm_sam/adapt.py
-  SEEDS=${SEEDS:-"0 1 2"} bash src/redifm_dinov3/scripts/run_dinov3_all_domains.sh
-  bash src/redifm_dinov3_nnunet/scripts/run_redifm_dinov3_nnunet.sh
-  bash src/dinov3_single/scripts/run_dinov3_single.sh
-  bash src/dinov3_dual/scripts/run_dinov3_dual.sh
+  train_if_missing DEFAULT_SOURCE_CHECKPOINT $PY src/training/train_source.py
+  train_if_missing NNUNET_SOURCE_CHECKPOINT $PY src/training/train_source.py --arch nnunet
+  train_if_missing DINOV3_HEAD_CHECKPOINT $PY src/training/train_dinov3_head.py
+  train_if_missing DINOV3_FULL_IMAGE_HEAD_CHECKPOINT \
+    $PY src/training/train_dinov3_head.py --full-image --crop-resolution 1024
+
+  $PY src/evaluate.py --method source_only
+  $PY src/evaluate.py --method source_only --arch nnunet
+  $PY src/evaluate.py --method dinov3_single
+  $PY src/evaluate.py --method dinov3_dual
+  $PY src/evaluate.py --method redifm_sam
+  for seed in ${SEEDS:-0 1 2}; do
+    $PY src/evaluate.py --method redifm_dinov3 --seed "$seed" \
+      --output "results/redifm_dinov3/final_all_domains_seed$seed.json"
+  done
+  $PY src/common/report.py results/redifm_dinov3/final_all_domains_seed*.json
+  $PY src/evaluate.py --method redifm_dinov3 --arch nnunet --seed 0 \
+    --output results/redifm_dinov3_nnunet/all_domains_seed0.json
 }
 
 stage_prostate() {
   # Seed 0, as in the README table.
-  SEEDS=0 bash src/nnunet_only/scripts/run_nnunet_only_prostate.sh
-  SEEDS=0 bash src/redifm_dinov3/scripts/run_dinov3_prostate.sh
-  SEEDS=0 bash src/redifm_dinov3_nnunet/scripts/run_redifm_dinov3_nnunet_prostate.sh
-  bash src/redifm_sam/scripts/run_redifm_sam_prostate.sh
+  train_if_missing PROSTATE_RESUNET_SOURCE_CHECKPOINT $PY src/training/train_source.py --task prostate
+  train_if_missing PROSTATE_NNUNET_SOURCE_CHECKPOINT \
+    $PY src/training/train_source.py --task prostate --arch nnunet
+  train_if_missing PROSTATE_DINOV3_HEAD_CHECKPOINT $PY src/training/train_dinov3_head.py --task prostate
+
+  $PY src/evaluate.py --method source_only --task prostate
+  $PY src/evaluate.py --method source_only --task prostate --arch nnunet
+  $PY src/evaluate.py --method redifm_sam --task prostate
+  $PY src/evaluate.py --method redifm_dinov3 --task prostate --seed 0 \
+    --output results/redifm_dinov3/prostate_all_domains_seed0.json
+  $PY src/evaluate.py --method redifm_dinov3 --task prostate --arch nnunet --seed 0 \
+    --output results/redifm_dinov3_nnunet/prostate_all_domains_seed0.json
 }
 
 stage_long_term() {
-  SEEDS=0 bash src/redifm_dinov3/scripts/run_dinov3_long_term.sh
+  for seed in ${SEEDS:-0}; do
+    $PY src/evaluate.py --method redifm_dinov3 --rounds 3 --seed "$seed" \
+      --output "results/redifm_dinov3/long_term_seed$seed.json"
+  done
+  $PY src/common/report.py results/redifm_dinov3/long_term_seed*.json
 }
 
 for stage in $STAGES; do

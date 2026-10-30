@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """ReDi-FM continual test-time adaptation for OD/OC segmentation.
 
 This implements Sections 3.1-3.3 of the included ReDi-FM paper for the
@@ -15,6 +14,8 @@ Domain-A ResUNet-34 checkpoint and the B -> C -> D -> E target stream:
 (source domain A, target stream B -> F, 384 x 384, one structure) with the
 prostate ResUNet-34 source checkpoint.
 
+    python src/evaluate.py --method redifm_sam [--task prostate]
+
 The paper does not publish the threshold used for "high" source entropy or
 the precise color-jitter/random-erasing magnitudes.  They are therefore
 explicit command-line settings below and are saved in the output JSON.
@@ -23,7 +24,6 @@ explicit command-line settings below and are saved in the output JSON.
 from __future__ import annotations
 
 import argparse
-import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -33,29 +33,16 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from torch import nn
-from tqdm import tqdm
 
-SRC_DIR = Path(__file__).resolve().parents[1]
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from common.data import Sample, atomic_json_write  # noqa: E402
-from common.models import ResUnet34  # noqa: E402
-from common.paths import (  # noqa: E402
-    RESULTS_DIR,
-    SOURCE_CHECKPOINTS,
-    SAM_CHECKPOINT,
-    require_file,
-)
-from common.protocol import (  # noqa: E402
+from common.models import ResUnet34
+from common.paths import SOURCE_CHECKPOINTS, SAM_CHECKPOINT, require_file
+from common.protocol import (
     binary_dice_numpy,
     image_to_tensor,
     make_augmentation,
     predict_after_update,
-    prepare_sample,
-    seed_everything,
 )
-from common.redifm import (  # noqa: E402
+from common.redifm import (
     StepDiagnostics,
     confidence_weight,
     consensus_score,
@@ -65,16 +52,9 @@ from common.redifm import (  # noqa: E402
     structure_probabilities,
     weighted_binary_segmentation_loss,
 )
-from common.tasks import TASKS  # noqa: E402
-from common.tracking import log_result, tracked_run  # noqa: E402
+from common.tasks import TASKS, Task
 
 
-DEFAULT_SAM_CHECKPOINT = SAM_CHECKPOINT
-DEFAULT_OUTPUT = RESULTS_DIR / "redifm_sam/proposed_redifm_domain_A.json"
-OUTPUTS = {
-    "odoc": DEFAULT_OUTPUT,
-    "prostate": RESULTS_DIR / "redifm_sam/prostate_proposed_redifm_domain_A.json",
-}
 # 0140.pdf Table 1, ReDi-FM with SAM, source domain A.
 PAPER_DO_A = {"odoc": 73.11, "prostate": 66.10}
 
@@ -230,65 +210,9 @@ def adaptation_step(
     return diagnostics, sam_diagnostics
 
 
-def evaluate_stream(
-    source_model: nn.Module,
-    target_model: nn.Module,
-    predictor: Any,
-    optimizer: torch.optim.Optimizer,
-    domains: dict[str, list[Sample]],
-    device: torch.device,
-    args: argparse.Namespace,
-) -> tuple[list[dict[str, Any]], list[dict[str, str | float]]]:
-    task = TASKS[args.task]
-    augmentation = make_augmentation(args)
-    results: list[dict[str, Any]] = []
-    per_image: list[dict[str, str | float]] = []
-
-    for domain, samples in domains.items():
-        rows: list[dict[str, float]] = []
-        for sample in tqdm(samples, desc=f"ReDi-FM domain {domain}"):
-            image, target = prepare_sample(sample, args.image_size)
-            image_tensor = image_to_tensor(image, device)
-            target = target.to(device)
-
-            adaptation_step(
-                source_model,
-                target_model,
-                predictor,
-                optimizer,
-                augmentation,
-                image,
-                image_tensor,
-                args,
-            )
-            prediction = predict_after_update(target_model, image_tensor)[0]
-            scores = task.score(prediction, target)
-            rows.append(scores)
-            per_image.append(
-                {
-                    "domain": domain,
-                    "image": sample.identifier,
-                    **scores,
-                    "mean_dsc": float(np.mean(list(scores.values()))),
-                }
-            )
-
-        result = task.domain_summary(domain, samples[0].dataset, rows)
-        results.append(result)
-        print(task.describe(result))
-    return results, per_image
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", choices=list(TASKS), default="odoc")
+def add_arguments(parser: argparse._ArgumentGroup) -> None:
     parser.add_argument("--source-checkpoint", type=Path, help="Default: the task's ResUNet-34")
-    parser.add_argument("--sam-checkpoint", type=Path, default=DEFAULT_SAM_CHECKPOINT)
-    parser.add_argument("--output", type=Path, help="Default: results/redifm_sam/[<task>_]proposed_redifm_domain_A.json")
-    parser.add_argument("--save-adapted-checkpoint", type=Path)
-    parser.add_argument("--domains", nargs="+", choices=list("BCDEF"), help="Default: the task's target stream")
-    parser.add_argument("--max-images", type=int, help="Limit images per domain for a smoke test")
-    parser.add_argument("--image-size", type=int, help="Default: 512 for OD/OC, 384 for prostate")
+    parser.add_argument("--sam-checkpoint", type=Path, default=SAM_CHECKPOINT)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--pseudo-threshold", type=float, default=0.5)
     parser.add_argument(
@@ -304,49 +228,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--erasing-probability", type=float, default=0.5)
     parser.add_argument("--erasing-min-scale", type=float, default=0.02)
     parser.add_argument("--erasing-max-scale", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--device",
-        default="cpu",
-        help="Trainable target-model device (default: cpu/system RAM)",
-    )
-    parser.add_argument(
-        "--source-device",
-        default="cpu",
-        help="Frozen source-model device (default: cpu/system RAM)",
-    )
-    parser.add_argument(
-        "--sam-device",
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="SAM device (default: cuda when available)",
-    )
-    return parser.parse_args()
-
-
-def resolve_task_defaults(args: argparse.Namespace) -> argparse.Namespace:
-    """Fill options left unset with the defaults of ``--task``."""
-    task = TASKS[args.task]
-    if args.source_checkpoint is None:
-        args.source_checkpoint = SOURCE_CHECKPOINTS[(args.task, "resunet34")]
-    if args.output is None:
-        args.output = OUTPUTS[args.task]
-    if args.domains is None:
-        args.domains = list(task.target_domains)
-    if args.image_size is None:
-        args.image_size = task.image_size
-    return args
+    # --device is the trainable target model's device; SAM ViT-H needs the GPU to itself.
+    parser.add_argument("--source-device", default="cpu", help="Frozen source-model device")
+    parser.add_argument("--sam-device", default="cuda" if torch.cuda.is_available() else "cpu",
+                        help="SAM device (default: cuda when available)")
 
 
 def validate_args(args: argparse.Namespace) -> None:
-    unknown = set(args.domains) - set(TASKS[args.task].target_domains)
-    if unknown:
-        raise ValueError(f"Task {args.task} has no target domain(s) {sorted(unknown)}")
     require_file(args.source_checkpoint, "Source checkpoint")
     require_file(args.sam_checkpoint, "SAM checkpoint")
-    if args.max_images is not None and args.max_images < 1:
-        raise ValueError("--max-images must be positive")
-    if args.image_size < 1 or args.learning_rate <= 0:
-        raise ValueError("image size and learning rate must be positive")
+    if args.learning_rate <= 0:
+        raise ValueError("--learning-rate must be positive")
     if not 0.0 <= args.pseudo_threshold <= 1.0:
         raise ValueError("--pseudo-threshold must be in [0, 1]")
     if not 0.0 <= args.entropy_threshold <= 1.0:
@@ -357,100 +249,34 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("invalid random-erasing scale interval")
 
 
-def load_models(
-    num_classes: int,
-    source_checkpoint: Path,
-    sam_checkpoint: Path,
-    target_device: torch.device,
-    source_device: torch.device,
-    sam_device: torch.device,
-) -> tuple[nn.Module, nn.Module, Any]:
-    state_dict = torch.load(
-        source_checkpoint, map_location="cpu", weights_only=True, mmap=True
-    )
-    source_model = ResUnet34(num_classes=num_classes)
-    source_model.load_state_dict(state_dict, strict=True)
-    source_model.requires_grad_(False).to(source_device).eval()
-
-    target_model = ResUnet34(num_classes=num_classes)
-    target_model.load_state_dict(state_dict, strict=True)
-    target_model.to(target_device).train()
-
-    SamPredictor, sam_model_registry = require_sam()
-    sam = sam_model_registry["vit_h"](checkpoint=str(sam_checkpoint))
-    sam.requires_grad_(False).to(sam_device).eval()
-    return source_model, target_model, SamPredictor(sam)
-
-
-def main(args: argparse.Namespace) -> None:
-    resolve_task_defaults(args)
+def build(args: argparse.Namespace, task: Task):
+    args.source_checkpoint = (args.source_checkpoint or SOURCE_CHECKPOINTS[(task.name, "resunet34")]).resolve()
+    args.device = args.device or "cpu"
     validate_args(args)
-    task = TASKS[args.task]
-    seed_everything(args.seed)
     device = torch.device(args.device)
-    source_device = torch.device(args.source_device)
-    sam_device = torch.device(args.sam_device)
-    domains = task.build_domains(args.domains, args.max_images)
-    source_model, target_model, predictor = load_models(
-        task.num_classes,
-        args.source_checkpoint.resolve(),
-        args.sam_checkpoint.resolve(),
-        device,
-        source_device,
-        sam_device,
-    )
+    state_dict = torch.load(args.source_checkpoint, map_location="cpu", weights_only=True, mmap=True)
+    source_model = ResUnet34(num_classes=task.num_classes)
+    source_model.load_state_dict(state_dict, strict=True)
+    source_model.requires_grad_(False).to(torch.device(args.source_device)).eval()
+    target_model = ResUnet34(num_classes=task.num_classes)
+    target_model.load_state_dict(state_dict, strict=True)
+    target_model.to(device).train()
+    SamPredictor, sam_model_registry = require_sam()
+    sam = sam_model_registry["vit_h"](checkpoint=str(args.sam_checkpoint.resolve()))
+    sam.requires_grad_(False).to(torch.device(args.sam_device)).eval()
+    predictor = SamPredictor(sam)
     optimizer = torch.optim.Adam(target_model.parameters(), lr=args.learning_rate)
+    augmentation = make_augmentation(args)
+    print(f"Checkpoint: {args.source_checkpoint}")
+    print(f"Devices: target {device}, source {args.source_device}, SAM {args.sam_device}; "
+          "one online update per image")
 
-    print(f"Checkpoint: {args.source_checkpoint.resolve()}")
-    print(f"Target device: {device}")
-    print(f"Source device: {source_device}")
-    print(f"SAM device: {sam_device}")
-    print("Protocol: ReDi-FM continual test-time adaptation (one online update per image)")
-    print(f"Task: {task.name}, target domains {'/'.join(args.domains)}")
-    print("Metric: mean per-image DSC" + ("; OD includes the OC region" if task.name == "odoc" else ""))
-
-    with tracked_run("redifm_sam", args):
-        results, per_image = evaluate_stream(
-            source_model,
-            target_model,
-            predictor,
-            optimizer,
-            domains,
-            device,
-            args,
+    def segment(image: Image.Image) -> tuple[torch.Tensor, dict]:
+        image_tensor = image_to_tensor(image, device)
+        step, sam_diagnostics = adaptation_step(
+            source_model, target_model, predictor, optimizer, augmentation, image, image_tensor, args
         )
-        do_a = float(np.mean([result["mean_dsc"] for result in results]))
-        pooled_image_mean = float(np.mean([row["mean_dsc"] for row in per_image])) * 100.0
-        print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
-        print(f"Pooled target-image DSC (diagnostic only): {pooled_image_mean:.2f}")
+        prediction = predict_after_update(target_model, image_tensor)[0]
+        return prediction, {"consensus": step.consensus, **sam_diagnostics}
 
-        config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-        payload = {
-            "protocol": "redifm_continual_test_time_adaptation",
-            "task": task.name,
-            "source_domain": "A",
-            "config": config,
-            "checkpoint": str(args.source_checkpoint.resolve()),
-            "target_device": str(device),
-            "source_device": str(source_device),
-            "sam_device": str(sam_device),
-            "image_size": args.image_size,
-            "target_domains": results,
-            "do_a_dsc": do_a,
-            "pooled_target_image_dsc": pooled_image_mean,
-            "paper_redifm_do_a_reference": PAPER_DO_A[task.name],
-            "per_image": per_image,
-        }
-        atomic_json_write(args.output, payload)
-        log_result(payload, args.output)
-        print(f"Saved: {args.output.resolve()}")
-
-        if args.save_adapted_checkpoint is not None:
-            destination = args.save_adapted_checkpoint.resolve()
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(target_model.state_dict(), destination)
-            print(f"Saved adapted target model: {destination}")
-
-
-if __name__ == "__main__":
-    main(parse_args())
+    return segment

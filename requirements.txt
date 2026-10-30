@@ -15,4 +15,6 @@ huggingface-hub>=0.36
 kaggle>=1.6
 gdown>=5
 nibabel>=5
+tifffile
+pyarrow
 # extras/medclip_samv2 only: transformers==4.35.2 scikit-learn scikit-image opencv-python-headless

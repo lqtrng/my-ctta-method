@@ -31,7 +31,7 @@ DINOv3 is a feature backbone with no prompt encoder or mask decoder, so the teac
 
 1. **The prompt becomes a crop.** The largest connected component of the source OD mask defines a square region of interest. It has 2× the disc's extent and is at least 96 px wide.
 2. **Frozen DINOv3 encoding.** The crop is resized to 512×512 and encoded by DINOv3 ViT-L/16 (LVD-1689M weights, bf16). This gives a 32×32 grid of patch tokens from the last block.
-3. **Frozen decoder head.** A small convolutional head maps the tokens to background, disc-rim and cup probabilities. It has a 1×1 reduction to 256 channels, 2× upsampling and two 3×3 conv blocks. The head is the counterpart of SAM's mask decoder. It was trained once, before deployment, on labeled domain A only (`train_head.py`), and no target data is ever used. Training samples are disc-centered crops with jittered scale and position, so the head tolerates the imperfect crops the source model produces under domain shift.
+3. **Frozen decoder head.** A small convolutional head maps the tokens to background, disc-rim and cup probabilities. It has a 1×1 reduction to 256 channels, 2× upsampling and two 3×3 conv blocks. The head is the counterpart of SAM's mask decoder. It was trained once, before deployment, on labeled domain A only (`src/training/train_dinov3_head.py`), and no target data is ever used. Training samples are disc-centered crops with jittered scale and position, so the head tolerates the imperfect crops the source model produces under domain shift.
 4. **Teacher output.** The OD/OC probabilities are pasted back into the full image, with everything outside the crop treated as background. The result enters the unchanged ReDi-FM loss in place of SAM's mask and probability.
 
 DINOv3, the decoder head and the source teacher stay frozen. Only the student ResUNet-34 is updated, and only the student's prediction is scored.
@@ -93,7 +93,7 @@ The paper does not give the entropy threshold (0.5) or the augmentation magnitud
 
 ## Results (prostate, source domain A = BIDMC, prostate DSC)
 
-The source models are trained on domain A with the repository recipe (`source_training/train.py --task prostate`). The target stream is B → F, with no reset and seed 0.
+The source models are trained on domain A with the repository recipe (`training/train_source.py --task prostate`). The target stream is B → F, with no reset and seed 0.
 
 | Method | B (BMC) | C (HK) | D (I2CVB) | E (RUNMC) | F (UCL) | **Do. A** |
 |---|---|---|---|---|---|---|
@@ -124,7 +124,7 @@ A checkpoint that the bundle lacks (a source model or a DINOv3 head) is trained 
 
 ### On Kaggle
 
-1. In a new notebook, turn on a GPU and Internet, then use **Add Input** to attach the asset dataset `lqtrung/redifm-assets`. The owner shares it with you.
+1. In a new notebook, turn on a GPU and Internet, then use **Add Input** to attach the asset dataset `wiedergeburt/redifm-assets`. The owner shares it with you.
 2. Run:
    ```bash
    !git clone https://github.com/lqtrng/my-ctta-method.git /kaggle/working/ReDi-FM
@@ -138,7 +138,7 @@ The same commands work. `download.py` downloads the asset bundle once into `.cac
 
 ### The asset bundle
 
-The OD/OC datasets, the prepared prostate slices and this project's checkpoints have no public download. They are published once as a private Kaggle dataset, holding only the files the code reads (about 3.8 GB):
+The OD/OC datasets, the prepared prostate slices and polyp images and this project's checkpoints have no single public download. They are published once as a private Kaggle dataset, holding only the files the code reads (about 4.4 GB):
 
 ```bash
 python src/download/bundle.py build                                   # stage into .cache/kaggle-bundle
@@ -165,29 +165,37 @@ Runs with `--max-images` are tagged `smoke_test=True`. Set `REDIFM_MLFLOW=0` to 
 
 ## Repository layout
 
-Each method lives in its own folder under `src/`, with its outputs in the matching folder under `results/`. Code that more than one method uses lives in `src/common/`. All commands run from the repository root.
+`src/` is grouped by role. All commands run from the repository root.
 
-| Folder | Method | Entry point | Results |
-|---|---|---|---|
-| `src/common/` | shared: paths, data streams, tasks, networks, online CTTA protocol, ReDi-FM prompts and losses, MLflow tracking | n/a | n/a |
-| `src/download/` | fetch data, weights and checkpoints (the only code that uses the network); build the asset bundle | `download.py`, `bundle.py` | `data/`, model folder |
-| `src/source_training/` | train the ResUNet-34 or nnU-Net source model on domain A | `train.py` | model folder |
-| `src/source_only/` | source-only baseline (no adaptation) | `evaluate.py` | `results/source_only/` |
-| `src/redifm_sam/` | ReDi-FM with frozen SAM ViT-H (paper method) | `adapt.py`, `scripts/*.sh` | `results/redifm_sam/` |
-| `src/redifm_dinov3/` | ReDi-FM with frozen DINOv3 ViT-L/16 | `adapt.py`, `long_term.py`, `train_head.py`, `scripts/*.sh` | `results/redifm_dinov3/` |
-| `src/dinov3_single/` | one frozen DINOv3 with a full-image head (`train_head.py --full-image`), no ResUNet, no adaptation | `evaluate.py`, `scripts/run_dinov3_single.sh` | `results/dinov3_single/` |
-| `src/nnunet_only/` | source-only baseline with nnU-Net's 2D network (`source_training/train.py --arch nnunet`) | `evaluate.py`, `scripts/*.sh` | `results/nnunet_only/` |
-| `src/redifm_dinov3_nnunet/` | ReDi-FM with frozen DINOv3, nnU-Net 2D as source/target network | `adapt.py`, `scripts/*.sh` | `results/redifm_dinov3_nnunet/` |
-| `src/dinov3_dual/` | full-image DINOv3 in place of the source ResUNet + DINOv3 crop teacher, fused with Eq. 16 weighting, no adaptation | `evaluate.py`, `scripts/run_dinov3_dual.sh` | `results/dinov3_dual/` |
-| `extras/` | not part of `reproduce.sh`: the zero-shot MedCLIP-SAMv2 baseline (`medclip_samv2/`), DINOv3 teacher diagnostics (`dinov3_diagnostics/`) and figure scripts (`examples/`) | | `results/medclip_samv2/` |
+```
+src/
+  evaluate.py  the one evaluation script: streams the target domains, scores every method
+               the same way (per-image DSC, domain means, Do. A, long-term rounds), writes
+               results/<method>/ and logs to MLflow
+  common/      shared code: paths, data streams, tasks and their scoring, networks, DINOv3
+               backbone and head, ReDi-FM prompts and losses, MLflow tracking, seed report
+  download/    the only code that uses the network: fetch data, weights and checkpoints,
+               prepare the prostate and polyp benchmarks, build the Kaggle asset bundle
+  training/    train_source.py        ResUNet-34 or nnU-Net source model on domain A
+               train_dinov3_head.py   DINOv3 decoder head on domain A (--full-image for the single/dual baselines)
+  baselines/   source_only.py         no adaptation (--arch nnunet: the "nnU-Net only" row)
+               dinov3_single.py       one frozen DINOv3 with a full-image head, no ResUNet, no adaptation
+               dinov3_dual.py         full-image DINOv3 + DINOv3 crop teacher fused with Eq. 16, no adaptation
+  methods/     redifm_sam.py          ReDi-FM with frozen SAM ViT-H (the paper's method)
+               redifm_dinov3.py       ReDi-FM with frozen DINOv3 ViT-L/16 (--arch nnunet: nnU-Net source/target)
+extras/        not part of reproduce.sh: zero-shot MedCLIP-SAMv2, DINOv3 teacher diagnostics, figure scripts
+```
 
-Individual methods can also be run directly:
+Every file in `baselines/` and `methods/` is a black box for `evaluate.py`: `build(args, task)` returns a segmenter that maps one target image to a class map (a CTTA method updates itself inside that call). The results folder and MLflow run are named `<method>[_<arch>]`, e.g. `results/source_only_nnunet/`.
 
 ```bash
-python src/download/download.py --check            # what is present, what is missing
-python src/source_only/evaluate.py --task prostate
-python src/redifm_sam/adapt.py --domains B C D E
-src/redifm_dinov3/scripts/run_dinov3_all_domains.sh     # DINOv3, full stream, 3 seeds
+python src/download/download.py --check                                   # what is present, what is missing
+python src/evaluate.py --method source_only --task prostate
+python src/evaluate.py --method redifm_sam --domains B C D E
+python src/evaluate.py --method redifm_dinov3 --domains B --seed 0        # one domain, one seed
+python src/evaluate.py --method redifm_dinov3 --rounds 3                  # long-term CTTA (Table 3)
+python src/evaluate.py --method redifm_dinov3 --help                      # every option of a method
+python src/common/report.py results/redifm_dinov3/final_all_domains_seed*.json   # mean over seeds
 ```
 
 Methods load files only from the local paths in `src/common/paths.py` and never download.
