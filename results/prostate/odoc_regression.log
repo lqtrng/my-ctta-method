@@ -1,0 +1,10 @@
+Checkpoint: /run/media/lqtrung/1tb-ssd/Model/ReDi-FM/domain_A_ResUNet34_last_20261017_215955.pth (resunet34)
+Foundation model: DINOv3 vit_large_patch16_dinov3.lvd1689m on cuda
+Protocol: ReDi-FM continual test-time adaptation (one online update per image)
+Task: odoc, target domains B
+Metric: mean per-image DSC; OD includes the OC region
+ReDi-FM/DINOv3 domain B:   0%|          | 0/5 [00:00<?, ?it/s]ReDi-FM/DINOv3 domain B:  20%|██        | 1/5 [00:00<00:02,  1.47it/s]ReDi-FM/DINOv3 domain B:  40%|████      | 2/5 [00:00<00:01,  2.74it/s]ReDi-FM/DINOv3 domain B:  60%|██████    | 3/5 [00:00<00:00,  3.82it/s]ReDi-FM/DINOv3 domain B:  80%|████████  | 4/5 [00:01<00:00,  4.67it/s]ReDi-FM/DINOv3 domain B: 100%|██████████| 5/5 [00:01<00:00,  5.33it/s]ReDi-FM/DINOv3 domain B: 100%|██████████| 5/5 [00:01<00:00,  4.01it/s]
+Domain B (REFUGE, n=5): OD=56.61, OC=43.45, Mean=50.03
+Do. A DSC (unweighted B domain mean): 50.03
+Pooled target-image DSC (diagnostic only): 50.03
+Saved: /tmp/claude-1000/-home-lqtrung-code-python-ReDi-FM/5f124b9e-34e5-4aaf-9706-c4b31a5c4b55/scratchpad/odoc_regression.json

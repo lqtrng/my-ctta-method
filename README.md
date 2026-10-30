@@ -81,11 +81,27 @@ The paper does not give the entropy threshold (0.5) or the augmentation magnitud
 | ReDi-FM + SAM (our run, seed 42) | 72.46 | 69.94 | 68.76 | **75.75** | 71.73 |
 | ReDi-FM + SAM (paper) | | | | | 73.11 |
 | **ReDi-FM + DINOv3** (mean of seeds 0/1/2) | **78.88** | **77.61** | **79.22** | 74.49 | **77.55 ± 0.10** |
+| DINOv3 single (one full-image DINOv3, no ResUNet, no adaptation) | 51.17 | 82.80 | 59.83 | 84.62 | 69.61 |
+| DINOv3 dual (full-image DINOv3 + crop DINOv3, fused, no adaptation) | 41.52 | 85.10 | 61.75 | 84.01 | 68.09 |
+| nnU-Net only (nnU-Net 2D source model, no adaptation) | 75.80 | 60.20 | 67.43 | 74.78 | 69.55 |
+| ReDi-FM + DINOv3 with nnU-Net (seed 0) | 82.52 | 80.71 | 82.67 | 82.50 | 82.10 |
 
 - **Where the gain comes from.** Almost all of it is in OC: +15 to +22 DSC on B, C and D. OD is on par with SAM.
 - **Forgetting check.** In the long-term check (the Table 3 protocol, 3 rounds of B→C→D→E, seed 0), the rounds give 77.57 / 75.97 / 77.39. That is an average of 76.98, a gain of +23.31 over source only, and a performance degradation of 0.59.
 - **Caveat.** The decoder head adds domain-A supervision that zero-shot SAM does not have. Design choices were also made with domain-B labels in view.
 - **Further detail** is in `results/redifm_dinov3/WRITEUP.md`.
+
+## Results (prostate, source domain A = BIDMC, prostate DSC)
+
+The source models are trained on domain A with the repository recipe (`source_training/train.py --task prostate`). The target stream is B → F, with no reset and seed 0.
+
+| Method | B (BMC) | C (HK) | D (I2CVB) | E (RUNMC) | F (UCL) | **Do. A** |
+|---|---|---|---|---|---|---|
+| Source only, ResUNet-34 | 19.07 | 72.54 | 9.60 | 23.47 | 7.75 | 26.49 |
+| nnU-Net only (no adaptation) | 58.05 | 66.94 | 23.15 | 51.86 | 39.28 | 47.86 |
+| ReDi-FM + DINOv3, ResUNet-34 | 52.21 | **77.61** | 43.02 | **64.79** | 36.96 | 54.92 |
+| **ReDi-FM + DINOv3, nnU-Net** | **70.08** | 72.06 | **62.64** | 64.47 | **63.69** | **66.59** |
+| Paper (`0140.pdf` Table 1): Source Only / ReDi-FM + SAM | | | | | | 51.02 / 66.10 |
 
 ## Repository layout
 
@@ -100,6 +116,10 @@ Each method lives in its own folder under `src/`, with its outputs in the matchi
 | `src/medclip_samv2/` | zero-shot MedCLIP-SAMv2 baseline | `zero_shot.py` | `results/medclip_samv2/` |
 | `src/redifm_sam/` | ReDi-FM with frozen SAM ViT-H (paper method) | `adapt.py` | `results/redifm_sam/` |
 | `src/redifm_dinov3/` | ReDi-FM with frozen DINOv3 ViT-L/16 | `adapt.py`, `long_term.py`, `train_head.py`, `scripts/*.sh` | `results/redifm_dinov3/` |
+| `src/dinov3_single/` | one frozen DINOv3 with a full-image head (`train_head.py --full-image`), no ResUNet, no adaptation | `evaluate.py`, `scripts/run_dinov3_single.sh` | `results/dinov3_single/` |
+| `src/nnunet_only/` | source-only baseline with nnU-Net's 2D network (`source_training/train.py --arch nnunet`) | `evaluate.py`, `scripts/run_nnunet_only.sh` | `results/nnunet_only/` |
+| `src/redifm_dinov3_nnunet/` | ReDi-FM with frozen DINOv3, nnU-Net 2D as source/target network | `adapt.py`, `scripts/run_redifm_dinov3_nnunet.sh` | `results/redifm_dinov3_nnunet/` |
+| `src/dinov3_dual/` | full-image DINOv3 in place of the source ResUNet + DINOv3 crop teacher, fused with Eq. 16 weighting, no adaptation | `evaluate.py`, `scripts/run_dinov3_dual.sh` | `results/dinov3_dual/` |
 
 ```bash
 .venv/bin/python src/download/download.py --check  # what is present, what is missing
@@ -113,5 +133,7 @@ src/redifm_dinov3/scripts/run_dinov3_long_term.sh       # DINOv3, 3-round forget
 Methods load weights only from the local paths in `src/common/paths.py` and never download.
 
 **Where weights are stored.** Weights live in the model folder. That is `/run/media/lqtrung/1tb-ssd/Model` when it exists, otherwise `checkpoints/`; set `REDIFM_MODEL_DIR` to override. Shared foundation models (DINOv3, the BiomedCLIP config) sit at the top level of the model folder. This project's checkpoints (ResUNet-34, SAM ViT-H, the fine-tuned BiomedCLIP, the DINOv3 decoder heads) sit in its `ReDi-FM/` subfolder.
+
+**Prostate dataset.** The six-site prostate MRI benchmark of `0140.pdf` (Section 4.1) is fetched and laid out by `download.py prostate`, using `src/download/prepare_prostate.py`. It lives in `data/prostate-6/domain_{A..F}_{BIDMC,BMC,HK,I2CVB,RUNMC,UCL}/{Images,Masks}`, with the same folder pattern as the OD/OC domains. Each domain holds the T2 slices that contain prostate, at 384×384: 261 / 384 / 158 / 468 / 421 / 175 slices, matching the paper. Masks are class-index PNGs (0 = background, 1 = prostate). `common.data.build_prostate_domains` loads them.
 
 **Files you place by hand.** The dataset, the ResUNet-34 checkpoints and the fine-tuned MedCLIP-SAMv2 BiomedCLIP weights have no public download. `download.py --check` lists where each one goes.

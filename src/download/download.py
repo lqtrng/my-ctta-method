@@ -34,8 +34,12 @@ from common.paths import (  # noqa: E402
     DATA_DIR,
     DEFAULT_SOURCE_CHECKPOINT,
     DINOV3_ARCH,
+    MEDDINOV3_CHECKPOINT,
+    MEDDINOV3_REPO_DIR,
     MODEL_DIR,
     PRETRAINED_RESUNET_CHECKPOINT,
+    PROSTATE_ARCHIVE,
+    PROSTATE_DIR,
     SAM_CHECKPOINT,
     dinov3_weights,
 )
@@ -44,6 +48,11 @@ from common.paths import (  # noqa: E402
 SAM_URL = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
 BIOMEDCLIP_MODEL_ID = "chuhac/BiomedCLIP-vit-bert-hf"
 BIOMEDCLIP_REVISION = "c44fed22e30460c0ea1b033a41b68fdab375d64c"
+PROSTATE_DRIVE_ID = "1TtrjnlnJ1yqr5m4LUGMelKTQXtvZaru-"  # Processed_data_nii.zip, liuquande.github.io/SAML
+MEDDINOV3_MODEL_ID = "ricklisz123/MedDINOv3-ViTB-16-CT-3M"
+MEDDINOV3_REVISION = "20d233b0ce1b1f93c46550787cf4b409a6f4a95e"
+MEDDINOV3_REPO_URL = "https://github.com/ricklisz/MedDINOv3.git"
+MEDDINOV3_REPO_COMMIT = "a2460c2547899283446e520b84523454f7e25608"
 
 
 @dataclass(frozen=True)
@@ -63,6 +72,36 @@ def fetch_dinov3(path: Path) -> None:
         allow_patterns=["model.safetensors", "config.json", "LICENSE.md"],
         local_dir=path.parent,
     )
+
+
+def fetch_meddinov3(path: Path) -> None:
+    """Official MedDINOv3 ViT-B/16 checkpoint, pretrained on CT-3M."""
+    from huggingface_hub import hf_hub_download
+
+    hf_hub_download(
+        MEDDINOV3_MODEL_ID, "model.pth", revision=MEDDINOV3_REVISION, local_dir=path.parent
+    )
+
+
+def fetch_meddinov3_code(path: Path) -> None:
+    """Official MedDINOv3 implementation (model code and Primus decoder)."""
+    import subprocess
+
+    subprocess.run(["git", "clone", MEDDINOV3_REPO_URL, str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "checkout", MEDDINOV3_REPO_COMMIT], check=True)
+
+
+def fetch_prostate(path: Path) -> None:
+    """Six-site prostate MRI release, then the OD/OC-style per-domain layout."""
+    import subprocess
+
+    import gdown
+
+    if not PROSTATE_ARCHIVE.is_file():
+        PROSTATE_ARCHIVE.parent.mkdir(parents=True, exist_ok=True)
+        gdown.download(id=PROSTATE_DRIVE_ID, output=str(PROSTATE_ARCHIVE))
+    script = Path(__file__).resolve().parent / "prepare_prostate.py"
+    subprocess.run([sys.executable, str(script)], check=True)
 
 
 def fetch_sam(path: Path) -> None:
@@ -87,6 +126,8 @@ def fetch_biomedclip_config(path: Path) -> None:
 
 ASSETS = {
     "dinov3": Asset(dinov3_weights(MODEL_DIR, DINOV3_ARCH), "redifm_dinov3", fetch_dinov3),
+    "meddinov3": Asset(MEDDINOV3_CHECKPOINT, "meddinov3", fetch_meddinov3),
+    "meddinov3-code": Asset(MEDDINOV3_REPO_DIR, "meddinov3", fetch_meddinov3_code),
     "sam": Asset(SAM_CHECKPOINT, "redifm_sam, medclip_samv2", fetch_sam),
     "biomedclip-config": Asset(BIOMEDCLIP_DIR / "config.json", "medclip_samv2", fetch_biomedclip_config),
     "biomedclip-weights": Asset(
@@ -101,6 +142,7 @@ ASSETS = {
         PRETRAINED_RESUNET_CHECKPOINT, "source_training", manual="ResUNet-34 initialization"
     ),
     "data": Asset(DATA_DIR, "all methods", manual="OD/OC benchmark, domains A-E"),
+    "prostate": Asset(PROSTATE_DIR / "manifest.json", "prostate experiments", fetch_prostate),
 }
 
 

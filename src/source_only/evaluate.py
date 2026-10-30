@@ -14,6 +14,10 @@ The paper reports one DSC per source domain ("Do. A", for example), obtained by
 averaging over all remaining target domains.  This script additionally reports
 optic-disc and optic-cup DSC for every target domain so the aggregate is fully
 auditable.
+
+``--task prostate`` evaluates a prostate domain-A model on target domains B-F
+of the six-site prostate benchmark, through the shared protocol in
+``common/`` (384 x 384, per-image min-max normalization, per-image DSC).
 """
 
 from __future__ import annotations
@@ -35,13 +39,16 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.models import ResUnet34  # noqa: E402
+from common.models import ARCHITECTURES  # noqa: E402
 from common.paths import (  # noqa: E402
     DATA_DIR,
     DEFAULT_SOURCE_CHECKPOINT as DEFAULT_CHECKPOINT,
     DRISHTI_ARCHIVE,
+    PROSTATE_NNUNET_SOURCE_CHECKPOINT,
+    PROSTATE_RESUNET_SOURCE_CHECKPOINT,
     RESULTS_DIR,
 )
+from common.tasks import TASKS  # noqa: E402
 
 
 DEFAULT_OUTPUT = RESULTS_DIR / "source_only/baseline_no_adaptation_domain_A.json"
@@ -221,7 +228,7 @@ def image_dice(prediction: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
 
 
 def evaluate_domain(
-    model: ResUnet34,
+    model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
     domain: str,
@@ -266,10 +273,50 @@ def evaluate_domain(
     return result, per_image
 
 
-def parse_args() -> argparse.Namespace:
+PROSTATE_CHECKPOINTS = {
+    "resunet34": PROSTATE_RESUNET_SOURCE_CHECKPOINT,
+    "nnunet": PROSTATE_NNUNET_SOURCE_CHECKPOINT,
+}
+
+
+def evaluate_task_stream(
+    model: torch.nn.Module, task_name: str, device: torch.device
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Source-only scoring of a non-OD/OC task through the shared protocol."""
+    from common.protocol import image_to_tensor, prepare_sample
+
+    task = TASKS[task_name]
+    results: list[dict[str, object]] = []
+    per_image: list[dict[str, object]] = []
+    with torch.inference_mode():
+        for domain, samples in task.build_domains(list(task.target_domains), None).items():
+            rows = []
+            for sample in samples:
+                image, target = prepare_sample(sample, task.image_size)
+                prediction = model(image_to_tensor(image, device)).argmax(dim=1)[0].cpu()
+                scores = task.score(prediction, target)
+                rows.append(scores)
+                per_image.append(
+                    {
+                        "domain": domain,
+                        "image": sample.identifier,
+                        **scores,
+                        "mean_dsc": float(np.mean(list(scores.values()))),
+                    }
+                )
+            results.append(task.domain_summary(domain, samples[0].dataset, rows))
+            print(task.describe(results[-1]))
+    return results, per_image
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--task", choices=list(TASKS), default="odoc")
+    parser.add_argument("--arch", choices=list(ARCHITECTURES), default="resunet34")
+    parser.add_argument("--checkpoint", type=Path,
+                        help="Default: the domain-A source checkpoint of --task and --arch")
+    parser.add_argument("--output", type=Path,
+                        help="Default: results/source_only/[prostate_]baseline_no_adaptation_domain_A.json")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--image-size", type=int, default=512)
@@ -278,10 +325,19 @@ def parse_args() -> argparse.Namespace:
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="PyTorch device (default: cuda when available, otherwise cpu)",
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    return build_parser().parse_args()
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.checkpoint is None:
+        args.checkpoint = DEFAULT_CHECKPOINT if args.task == "odoc" else PROSTATE_CHECKPOINTS[args.arch]
+    if args.output is None:
+        prefix = "" if args.task == "odoc" else f"{args.task}_"
+        args.output = DEFAULT_OUTPUT.with_name(f"{prefix}{DEFAULT_OUTPUT.name}")
     if args.batch_size < 1 or args.workers < 0 or args.image_size < 1:
         raise ValueError("batch-size/image-size must be positive; workers cannot be negative")
     checkpoint = args.checkpoint.resolve()
@@ -289,14 +345,42 @@ def main(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
 
     device = torch.device(args.device)
-    model = ResUnet34(num_classes=3)
+    task = TASKS[args.task]
+    if args.arch == "nnunet":
+        model = ARCHITECTURES[args.arch](task.num_classes, task.image_size)
+    else:
+        model = ARCHITECTURES[args.arch](num_classes=task.num_classes)
     state_dict = torch.load(checkpoint, map_location="cpu", weights_only=True)
     model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
 
-    print(f"Checkpoint: {checkpoint}")
+    print(f"Checkpoint: {checkpoint} ({args.arch})")
     print(f"Device: {device}")
     print("Protocol: Source Only (no parameter or BN-statistic updates)")
+    if args.task != "odoc":
+        print(f"Task: {args.task}; metric: mean per-image DSC")
+        task_results, task_per_image = evaluate_task_stream(model, args.task, device)
+        do_a = float(np.mean([result["mean_dsc"] for result in task_results]))
+        print(f"Do. A DSC (unweighted {'/'.join(task.target_domains)} domain mean): {do_a:.2f}")
+        payload = {
+            "protocol": "source_only",
+            "task": args.task,
+            "source_domain": "A",
+            "arch": args.arch,
+            "checkpoint": str(checkpoint),
+            "image_size": task.image_size,
+            "target_domains": task_results,
+            "do_a_dsc": do_a,
+            # 0140.pdf Table 1, Source Only, source domain A.
+            "paper_source_only_do_a_reference": 51.02,
+            "per_image": task_per_image,
+        }
+        output = args.output.resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(f"Saved: {output}")
+        return
+
     print("Metric: mean per-image DSC; OD includes the OC region")
 
     results: list[DomainResult] = []
@@ -330,6 +414,7 @@ def main(args: argparse.Namespace) -> None:
     payload = {
         "protocol": "source_only",
         "source_domain": "A",
+        "arch": args.arch,
         "checkpoint": str(checkpoint),
         "image_size": args.image_size,
         "target_domains": [asdict(result) for result in results],

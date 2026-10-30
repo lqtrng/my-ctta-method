@@ -11,6 +11,11 @@ The decoder operates on disc-centered crops, exactly as at test time, where the
 crop is derived from the source model's pseudo-label (the "prompt").  Crop
 scale and center are jittered during training so the decoder tolerates the
 imperfect, shifted crops produced by the source model under domain shift.
+With ``--full-image`` the decoder sees the whole fundus image instead, which
+lets DINOv3 segment OD/OC without any source-model prompt.
+
+``--task prostate`` trains the same decoder on prostate domain A (BIDMC) crops
+centered on the prostate, with two classes {background, prostate}.
 """
 
 from __future__ import annotations
@@ -31,21 +36,23 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.data import DomainADataset  # noqa: E402
 from common.paths import (  # noqa: E402
     CHECKPOINT_DIR,
     DINOV3_ARCH,
-    DOMAIN_A_DIR,
     MODEL_DIR,
+    PROSTATE_DINOV3_HEAD_CHECKPOINT,
     dinov3_weights,
     require_file,
 )
 from common.protocol import seed_everything  # noqa: E402
+from common.redifm import structure_probabilities  # noqa: E402
+from common.tasks import TASKS, Task  # noqa: E402
 
 
 DEFAULT_DINOV3_DIR = MODEL_DIR
 DEFAULT_DINOV3_ARCH = DINOV3_ARCH
 DEFAULT_OUTPUT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_domain_A.pth"
+DEFAULT_FULL_IMAGE_OUTPUT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_full_image_domain_A.pth"
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -121,12 +128,11 @@ def jittered_box(
     return top, left, side
 
 
-def dice_cross_entropy(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    probabilities = logits.softmax(dim=1)
-    disc = probabilities[:, 1] + probabilities[:, 2]
-    cup = probabilities[:, 2]
+def dice_cross_entropy(logits: torch.Tensor, target: torch.Tensor, task: Task) -> torch.Tensor:
+    """Cross-entropy plus a soft Dice term per structure (OD and OC, or prostate)."""
+    structures = structure_probabilities(logits.softmax(dim=1)).unbind(dim=1)
     losses = [F.cross_entropy(logits, target)]
-    for prediction, label in ((disc, target >= 1), (cup, target == 2)):
+    for prediction, label in zip(structures, task.structure_masks(target)):
         label = label.float()
         intersection = (prediction * label).sum()
         losses.append(1.0 - (2.0 * intersection + 1.0) / (prediction.sum() + label.sum() + 1.0))
@@ -135,6 +141,7 @@ def dice_cross_entropy(logits: torch.Tensor, target: torch.Tensor) -> torch.Tens
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", choices=list(TASKS), default="odoc")
     parser.add_argument("--dinov3-dir", type=Path, default=DEFAULT_DINOV3_DIR)
     parser.add_argument("--dinov3-arch", default=DEFAULT_DINOV3_ARCH)
     parser.add_argument("--layers", type=int, nargs="+", default=[23])
@@ -142,24 +149,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--crop-scale", type=float, nargs=2, default=[1.5, 3.0])
     parser.add_argument("--crop-shift", type=float, default=0.25)
     parser.add_argument("--min-crop", type=int, default=96)
+    parser.add_argument("--full-image", action="store_true",
+                        help="Train on the whole image instead of disc-centered crops")
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--hidden", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.output is None:
+        if args.task == "prostate":
+            args.output = PROSTATE_DINOV3_HEAD_CHECKPOINT
+        else:
+            args.output = DEFAULT_FULL_IMAGE_OUTPUT if args.full_image else DEFAULT_OUTPUT
+    return args
 
 
 def main(args: argparse.Namespace) -> None:
     seed_everything(args.seed)
     device = torch.device(args.device)
-    dataset = DomainADataset(DOMAIN_A_DIR, 512)
+    task = TASKS[args.task]
+    dataset = task.source_dataset()
     samples = [dataset[index] for index in range(len(dataset))]
     model = load_dinov3(args.dinov3_dir, args.dinov3_arch, device)
     channels = model.embed_dim * len(args.layers)
-    head = SegmentationHead(channels, args.hidden).to(device)
+    head = SegmentationHead(channels, args.hidden, task.num_classes).to(device)
     optimizer = torch.optim.AdamW(head.parameters(), lr=args.learning_rate, weight_decay=1e-4)
     steps = args.epochs * int(np.ceil(len(samples) / args.batch_size))
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, args.learning_rate, total_steps=steps)
@@ -175,9 +191,12 @@ def main(args: argparse.Namespace) -> None:
                 image, target = samples[index]
                 image = torch.from_numpy(image).to(device)
                 target = torch.from_numpy(target[0].astype(np.int64)).to(device)
-                top, left, side = jittered_box(
-                    target.cpu().numpy(), tuple(args.crop_scale), args.crop_shift, args.min_crop
-                )
+                if args.full_image:
+                    top, left, side = 0, 0, target.shape[0]
+                else:
+                    top, left, side = jittered_box(
+                        target.cpu().numpy(), tuple(args.crop_scale), args.crop_shift, args.min_crop
+                    )
                 crop = image[:, top : top + side, left : left + side]
                 label = target[top : top + side, left : left + side]
                 if random.random() < 0.5:
@@ -195,7 +214,7 @@ def main(args: argparse.Namespace) -> None:
             logits = F.interpolate(
                 head(tokens), size=(resolution, resolution), mode="bilinear", align_corners=False
             )
-            loss = dice_cross_entropy(logits, torch.stack(labels))
+            loss = dice_cross_entropy(logits, torch.stack(labels), task)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -210,7 +229,10 @@ def main(args: argparse.Namespace) -> None:
             "dinov3_arch": args.dinov3_arch,
             "layers": args.layers,
             "hidden": args.hidden,
+            "task": args.task,
+            "num_classes": task.num_classes,
             "crop_resolution": resolution,
+            "full_image": args.full_image,
             "config": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         },
         args.output,

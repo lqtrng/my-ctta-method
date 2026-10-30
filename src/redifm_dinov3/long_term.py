@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -34,7 +33,12 @@ if str(SRC_DIR) not in sys.path:
 from common.data import atomic_json_write, build_domains  # noqa: E402
 from common.paths import RESULTS_DIR  # noqa: E402
 from common.protocol import seed_everything  # noqa: E402
-from redifm_dinov3.adapt import build_parser, evaluate_stream, load_models  # noqa: E402
+from redifm_dinov3.adapt import (  # noqa: E402
+    build_parser,
+    evaluate_stream,
+    load_models,
+    resolve_task_defaults,
+)
 
 
 DEFAULT_OUTPUT = RESULTS_DIR / "redifm_dinov3/long_term_domain_A.json"
@@ -55,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.description = __doc__
     parser.add_argument("--rounds", type=int, default=3)
     parser.set_defaults(output=DEFAULT_OUTPUT)
-    return parser.parse_args()
+    return resolve_task_defaults(parser.parse_args())
 
 
 def main(args: argparse.Namespace) -> None:
@@ -73,10 +77,10 @@ def main(args: argparse.Namespace) -> None:
         results, _ = evaluate_stream(
             source_model, target_model, segmenter, optimizer, domains, device, args
         )
-        do_a = float(np.mean([result.mean_dsc for result in results]))
+        do_a = float(np.mean([result["mean_dsc"] for result in results]))
         print(f"Round {index} Do. A DSC: {do_a:.2f}")
         rounds.append(
-            {"round": index, "do_a_dsc": do_a, "target_domains": [asdict(r) for r in results]}
+            {"round": index, "do_a_dsc": do_a, "target_domains": results}
         )
 
     round_scores = [row["do_a_dsc"] for row in rounds]

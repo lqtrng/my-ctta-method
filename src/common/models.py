@@ -138,3 +138,42 @@ class ResUnet34(nn.Module):
         output = self.up4(output, skips[0])
         output = self.up5(output)
         return self.seg_head(F.relu(self.bnout(output)))
+
+
+def NnUNet2D(num_classes: int = 3, image_size: int = 512) -> nn.Module:
+    """nnU-Net v2's 2D network as its default planner configures it for one patch size.
+
+    Features start at 32 and double per stage up to 512.  The encoder keeps
+    downsampling by 2 while the feature map stays at least 4 pixels wide (seven
+    poolings for 512 x 512).  Each stage uses two 3x3 conv - InstanceNorm -
+    LeakyReLU blocks in both encoder and decoder.  Weights use nnU-Net's He
+    initialization.  Deep supervision is off: one full-resolution output.
+    """
+    from dynamic_network_architectures.architectures.unet import PlainConvUNet
+    from dynamic_network_architectures.initialization.weight_init import InitWeights_He
+
+    stages = 1
+    while image_size // 2 ** stages >= 4:
+        stages += 1
+    model = PlainConvUNet(
+        input_channels=3,
+        n_stages=stages,
+        features_per_stage=[min(32 * 2 ** stage, 512) for stage in range(stages)],
+        conv_op=nn.Conv2d,
+        kernel_sizes=3,
+        strides=[1] + [2] * (stages - 1),
+        n_conv_per_stage=2,
+        num_classes=num_classes,
+        n_conv_per_stage_decoder=2,
+        conv_bias=True,
+        norm_op=nn.InstanceNorm2d,
+        norm_op_kwargs={"eps": 1e-5, "affine": True},
+        nonlin=nn.LeakyReLU,
+        nonlin_kwargs={"inplace": True},
+        deep_supervision=False,
+    )
+    model.apply(InitWeights_He(1e-2))
+    return model
+
+
+ARCHITECTURES = {"resunet34": ResUnet34, "nnunet": NnUNet2D}

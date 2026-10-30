@@ -51,3 +51,6 @@ runs/
 
 # Notebook checkpoints
 .ipynb_checkpoints/
+
+# Third-party source code, cloned by src/download/download.py
+third_party/

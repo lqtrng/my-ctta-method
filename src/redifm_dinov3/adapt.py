@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -46,21 +45,23 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.data import Sample, atomic_json_write, build_domains  # noqa: E402
-from common.models import NUM_CLASSES, ResUnet34  # noqa: E402
+from common.data import Sample, atomic_json_write  # noqa: E402
+from common.models import ARCHITECTURES  # noqa: E402
 from common.paths import (  # noqa: E402
     CHECKPOINT_DIR,
     DEFAULT_SOURCE_CHECKPOINT,
     DINOV3_ARCH,
     MODEL_DIR,
+    NNUNET_SOURCE_CHECKPOINT,
+    PROSTATE_DINOV3_HEAD_CHECKPOINT,
+    PROSTATE_NNUNET_SOURCE_CHECKPOINT,
+    PROSTATE_RESUNET_SOURCE_CHECKPOINT,
     RESULTS_DIR,
     dinov3_weights,
     require_file,
 )
 from common.protocol import (  # noqa: E402
-    DomainResult,
     binary_dice_numpy,
-    image_dice,
     image_to_tensor,
     make_augmentation,
     predict_after_update,
@@ -68,7 +69,6 @@ from common.protocol import (  # noqa: E402
     seed_everything,
 )
 from common.redifm import (  # noqa: E402
-    STRUCTURES,
     StepDiagnostics,
     confidence_weight,
     consensus_score,
@@ -79,6 +79,7 @@ from common.redifm import (  # noqa: E402
     structure_probabilities,
     weighted_binary_segmentation_loss,
 )
+from common.tasks import TASKS, Task  # noqa: E402
 from redifm_dinov3.train_head import SegmentationHead  # noqa: E402
 
 
@@ -86,6 +87,33 @@ DEFAULT_DINOV3_DIR = MODEL_DIR
 DEFAULT_DINOV3_ARCH = DINOV3_ARCH
 DEFAULT_OUTPUT = RESULTS_DIR / "redifm_dinov3/redifm_dinov3_domain_A.json"
 DEFAULT_HEAD_CHECKPOINT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_domain_A.pth"
+# Defaults per task and source/target network; OD/OC keeps the paths above.
+SOURCE_CHECKPOINTS = {
+    ("odoc", "resunet34"): DEFAULT_SOURCE_CHECKPOINT,
+    ("odoc", "nnunet"): NNUNET_SOURCE_CHECKPOINT,
+    ("prostate", "resunet34"): PROSTATE_RESUNET_SOURCE_CHECKPOINT,
+    ("prostate", "nnunet"): PROSTATE_NNUNET_SOURCE_CHECKPOINT,
+}
+HEAD_CHECKPOINTS = {"odoc": DEFAULT_HEAD_CHECKPOINT, "prostate": PROSTATE_DINOV3_HEAD_CHECKPOINT}
+METHOD_FOLDERS = {"resunet34": "redifm_dinov3", "nnunet": "redifm_dinov3_nnunet"}
+
+
+def resolve_task_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill options left unset with the defaults of ``--task`` and ``--arch``."""
+    task = TASKS[args.task]
+    if args.source_checkpoint is None:
+        args.source_checkpoint = SOURCE_CHECKPOINTS[(args.task, args.arch)]
+    if args.head_checkpoint is None:
+        args.head_checkpoint = HEAD_CHECKPOINTS[args.task]
+    if args.domains is None:
+        args.domains = list(task.target_domains)
+    if args.image_size is None:
+        args.image_size = task.image_size
+    if args.output is None:
+        folder = METHOD_FOLDERS[args.arch]
+        prefix = "" if args.task == "odoc" else f"{args.task}_"
+        args.output = RESULTS_DIR / folder / f"{prefix}{folder}_domain_A.json"
+    return args
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -111,13 +139,18 @@ class DinoV3Segmenter:
         self.std = torch.tensor(IMAGENET_STD, device=device).view(1, 3, 1, 1)
         self.head: nn.Module | None = None
         self.layers: list[int] = [len(self.model.blocks) - 1]
+        self.structures = TASKS[args.task].structures
         if args.candidates != "prototype":
             checkpoint = torch.load(args.head_checkpoint, map_location="cpu", weights_only=False)
             if checkpoint["dinov3_arch"] != args.dinov3_arch:
                 raise ValueError("Decoder head was trained on a different DINOv3 variant")
+            if checkpoint.get("task", "odoc") != args.task:
+                raise ValueError(f"Decoder head was trained for task {checkpoint.get('task', 'odoc')!r}")
             self.layers = list(checkpoint["layers"])
             self.head = SegmentationHead(
-                self.model.embed_dim * len(self.layers), checkpoint["hidden"]
+                self.model.embed_dim * len(self.layers),
+                checkpoint["hidden"],
+                checkpoint.get("num_classes", 3),
             )
             self.head.load_state_dict(checkpoint["state_dict"])
             self.head.requires_grad_(False).to(device).eval()
@@ -281,7 +314,7 @@ class DinoV3Segmenter:
         probabilities: list[torch.Tensor] = []
         diagnostics: dict[str, float] = {}
         disc_region = None
-        for index, structure in enumerate(STRUCTURES):
+        for index, structure in enumerate(self.structures):
             points = structure_aware_points(image, source_binary[index], source_soft[index])
             region = disc_region if structure == "cup" and self.args.cup_background == "rim" else None
             candidate_logits = []
@@ -380,14 +413,14 @@ def evaluate_stream(
     domains: dict[str, list[Sample]],
     device: torch.device,
     args: argparse.Namespace,
-) -> tuple[list[DomainResult], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    task = TASKS[args.task]
     augmentation = make_augmentation(args)
-    results: list[DomainResult] = []
+    results: list[dict[str, Any]] = []
     per_image: list[dict[str, Any]] = []
 
     for domain, samples in domains.items():
-        disc_scores: list[float] = []
-        cup_scores: list[float] = []
+        rows: list[dict[str, float]] = []
         for sample in tqdm(samples, desc=f"ReDi-FM/DINOv3 domain {domain}"):
             image, target = prepare_sample(sample, args.image_size)
             image_tensor = image_to_tensor(image, device)
@@ -404,51 +437,42 @@ def evaluate_stream(
                 args,
             )
             prediction = predict_after_update(target_model, image_tensor)[0]
-            disc_score = image_dice(prediction >= 1, target >= 1)
-            cup_score = image_dice(prediction == 2, target == 2)
-            disc_scores.append(disc_score)
-            cup_scores.append(cup_score)
+            scores = task.score(prediction, target)
+            rows.append(scores)
             per_image.append(
                 {
                     "domain": domain,
                     "image": sample.identifier,
-                    "disc_dsc": disc_score,
-                    "cup_dsc": cup_score,
-                    "mean_dsc": (disc_score + cup_score) / 2.0,
+                    **scores,
+                    "mean_dsc": float(np.mean(list(scores.values()))),
                     "consensus": step.consensus,
                     **foundation,
                 }
             )
 
-        disc_mean = float(np.mean(disc_scores))
-        cup_mean = float(np.mean(cup_scores))
-        result = DomainResult(
-            domain=domain,
-            dataset=samples[0].dataset,
-            images=len(samples),
-            disc_dsc=100.0 * disc_mean,
-            cup_dsc=100.0 * cup_mean,
-            mean_dsc=100.0 * (disc_mean + cup_mean) / 2.0,
-        )
+        result = task.domain_summary(domain, samples[0].dataset, rows)
         results.append(result)
-        print(
-            f"Domain {domain} ({result.dataset}, n={result.images}): "
-            f"OD={result.disc_dsc:.2f}, OC={result.cup_dsc:.2f}, "
-            f"Mean={result.mean_dsc:.2f}"
-        )
+        print(task.describe(result))
     return results, per_image
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-checkpoint", type=Path, default=DEFAULT_SOURCE_CHECKPOINT)
+    parser.add_argument("--task", choices=list(TASKS), default="odoc",
+                        help="Benchmark: OD/OC (target B-E) or prostate (target B-F)")
+    parser.add_argument("--arch", choices=list(ARCHITECTURES), default="resunet34",
+                        help="Source/target segmentation network")
+    parser.add_argument("--source-checkpoint", type=Path,
+                        help="Default: the domain-A checkpoint of --task and --arch")
     parser.add_argument("--dinov3-dir", type=Path, default=DEFAULT_DINOV3_DIR)
     parser.add_argument("--dinov3-arch", default=DEFAULT_DINOV3_ARCH)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", type=Path,
+                        help="Default: results/<method>/[<task>_]<method>_domain_A.json")
     parser.add_argument("--save-adapted-checkpoint", type=Path)
-    parser.add_argument("--domains", nargs="+", choices=list("BCDE"), default=list("BCDE"))
+    parser.add_argument("--domains", nargs="+", choices=list("BCDEF"),
+                        help="Target domains (default: all targets of --task)")
     parser.add_argument("--max-images", type=int, help="Limit images per domain for a smoke test")
-    parser.add_argument("--image-size", type=int, default=512)
+    parser.add_argument("--image-size", type=int, help="Default: 512 (OD/OC) or 384 (prostate)")
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--pseudo-threshold", type=float, default=0.5)
     parser.add_argument(
@@ -473,7 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Contrast the cup with the whole crop or only with the disc rim")
     parser.add_argument("--candidates", choices=("prototype", "head", "all"), default="head",
                         help="DINOv3 candidate masks: prompt prototypes, the source-trained decoder, or both")
-    parser.add_argument("--head-checkpoint", type=Path, default=DEFAULT_HEAD_CHECKPOINT)
+    parser.add_argument("--head-checkpoint", type=Path,
+                        help="Default: the DINOv3 decoder head trained for --task")
     parser.add_argument("--refine-iterations", type=int, default=0,
                         help="EM re-estimations of the prototypes from DINOv3's own partition")
     parser.add_argument("--jitter-brightness", type=float, default=0.2)
@@ -489,17 +514,25 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args() -> argparse.Namespace:
-    return build_parser().parse_args()
+    return resolve_task_defaults(build_parser().parse_args())
+
+
+def build_network(args: argparse.Namespace) -> nn.Module:
+    task = TASKS[args.task]
+    if args.arch == "nnunet":
+        return ARCHITECTURES[args.arch](task.num_classes, args.image_size)
+    return ARCHITECTURES[args.arch](num_classes=task.num_classes)
 
 
 def load_models(
     args: argparse.Namespace, device: torch.device
 ) -> tuple[nn.Module, nn.Module, DinoV3Segmenter, torch.optim.Optimizer]:
+    resolve_task_defaults(args)
     state_dict = torch.load(args.source_checkpoint, map_location="cpu", weights_only=True)
-    source_model = ResUnet34(num_classes=NUM_CLASSES)
+    source_model = build_network(args)
     source_model.load_state_dict(state_dict, strict=True)
     source_model.requires_grad_(False).to(device).eval()
-    target_model = ResUnet34(num_classes=NUM_CLASSES)
+    target_model = build_network(args)
     target_model.load_state_dict(state_dict, strict=True)
     target_model.to(device).train()
     segmenter = DinoV3Segmenter(args, device)
@@ -508,21 +541,27 @@ def load_models(
 
 
 def main(args: argparse.Namespace) -> None:
+    resolve_task_defaults(args)
+    task = TASKS[args.task]
     seed_everything(args.seed)
     device = torch.device(args.device)
-    domains = build_domains(args.domains, args.max_images)
+    domains = task.build_domains(args.domains, args.max_images)
 
     source_model, target_model, segmenter, optimizer = load_models(args, device)
 
-    print(f"Checkpoint: {args.source_checkpoint.resolve()}")
+    print(f"Checkpoint: {args.source_checkpoint.resolve()} ({args.arch})")
     print(f"Foundation model: DINOv3 {args.dinov3_arch} on {device}")
     print("Protocol: ReDi-FM continual test-time adaptation (one online update per image)")
-    print("Metric: mean per-image DSC; OD includes the OC region")
+    print(f"Task: {task.name}, target domains {'/'.join(args.domains)}")
+    if task.name == "odoc":
+        print("Metric: mean per-image DSC; OD includes the OC region")
+    else:
+        print("Metric: mean per-image prostate DSC")
 
     results, per_image = evaluate_stream(
         source_model, target_model, segmenter, optimizer, domains, device, args
     )
-    do_a = float(np.mean([result.mean_dsc for result in results]))
+    do_a = float(np.mean([result["mean_dsc"] for result in results]))
     pooled_image_mean = float(np.mean([row["mean_dsc"] for row in per_image])) * 100.0
     print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
     print(f"Pooled target-image DSC (diagnostic only): {pooled_image_mean:.2f}")
@@ -530,12 +569,14 @@ def main(args: argparse.Namespace) -> None:
     config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
     payload = {
         "protocol": "redifm_dinov3_continual_test_time_adaptation",
+        "task": task.name,
         "source_domain": "A",
         "config": config,
-        "target_domains": [asdict(result) for result in results],
+        "target_domains": results,
         "do_a_dsc": do_a,
         "pooled_target_image_dsc": pooled_image_mean,
-        "paper_redifm_do_a_reference": 73.11,
+        # 0140.pdf Table 1, ReDi-FM with SAM, source domain A.
+        "paper_redifm_do_a_reference": {"odoc": 73.11, "prostate": 66.10}[task.name],
         "per_image": per_image,
     }
     atomic_json_write(args.output, payload)

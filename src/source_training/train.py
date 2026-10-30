@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fine-tune the OD/OC ResUNet-34 checkpoint on paper Domain A.
+"""Train the OD/OC source model on paper Domain A.
 
 The paths and default hyperparameters are intentionally local to this project.
 Only one checkpoint is written, after the final epoch.  Its timestamped name
@@ -15,6 +15,18 @@ benchmark recipe used by the paper's cited VPTTA implementation:
 
 The downloaded checkpoint has a three-class head, so training uses the
 compatible background/disc/cup encoding and Dice + cross-entropy loss.
+
+``--arch nnunet`` trains nnU-Net's 2D network (``common.models.NnUNet2D``)
+with the same recipe instead.  It has no pretrained checkpoint, so it starts
+from nnU-Net's He initialization.
+
+``--task prostate`` trains on prostate domain A (BIDMC, 261 slices, 384 x 384,
+two classes).  The pretrained ResUNet-34 decoder and head belong to OD/OC, so
+only its ImageNet ResNet-34 encoder is loaded there.  MRI sites differ mostly
+in intensity, so prostate adds nnU-Net's 2D intensity augmentation (blur,
+brightness, contrast, low resolution, gamma; ``--augmentation nnunet``).  The
+three input channels repeat one grayscale slice, so every intensity transform
+treats them alike.
 """
 
 from __future__ import annotations
@@ -32,8 +44,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from batchgenerators.transforms.abstract_transforms import Compose
-from batchgenerators.transforms.color_transforms import BrightnessMultiplicativeTransform
-from batchgenerators.transforms.noise_transforms import GaussianNoiseTransform
+from batchgenerators.transforms.color_transforms import (
+    BrightnessMultiplicativeTransform,
+    ContrastAugmentationTransform,
+    GammaTransform,
+)
+from batchgenerators.transforms.noise_transforms import GaussianBlurTransform, GaussianNoiseTransform
+from batchgenerators.transforms.resample_transforms import SimulateLowResolutionTransform
 from batchgenerators.transforms.spatial_transforms import MirrorTransform, SpatialTransform_2
 from torch.utils.data import DataLoader
 
@@ -41,10 +58,10 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.data import DomainADataset  # noqa: E402
-from common.models import ResUnet34  # noqa: E402
-from common.paths import CHECKPOINT_DIR, DOMAIN_A_DIR, PRETRAINED_RESUNET_CHECKPOINT  # noqa: E402
+from common.models import ARCHITECTURES  # noqa: E402
+from common.paths import CHECKPOINT_DIR, PRETRAINED_RESUNET_CHECKPOINT  # noqa: E402
 from common.protocol import seed_everything  # noqa: E402
+from common.tasks import TASKS  # noqa: E402
 
 
 INITIAL_CHECKPOINT = PRETRAINED_RESUNET_CHECKPOINT
@@ -64,9 +81,34 @@ class TrainConfig:
     num_classes: int = 3
 
 
-def build_augmentation(image_size: int) -> Compose:
-    """Official OD/OC source-training augmentation recipe."""
+def nnunet_intensity_transforms() -> list:
+    """nnU-Net's default 2D intensity augmentation, the same for every channel."""
+    return [
+        GaussianBlurTransform(
+            (0.5, 1.0), different_sigma_per_channel=False, p_per_sample=0.2, p_per_channel=1.0
+        ),
+        BrightnessMultiplicativeTransform((0.75, 1.25), per_channel=False, p_per_sample=0.15),
+        ContrastAugmentationTransform(per_channel=False, p_per_sample=0.15),
+        SimulateLowResolutionTransform(
+            zoom_range=(0.5, 1.0),
+            per_channel=False,
+            p_per_channel=1.0,
+            order_downsample=0,
+            order_upsample=3,
+            p_per_sample=0.25,
+        ),
+        GammaTransform((0.7, 1.5), True, False, retain_stats=True, p_per_sample=0.1),
+        GammaTransform((0.7, 1.5), False, False, retain_stats=True, p_per_sample=0.3),
+    ]
+
+
+AUGMENTATIONS = ("official", "nnunet")
+
+
+def build_augmentation(image_size: int, augmentation: str = "official") -> Compose:
+    """Official OD/OC source-training augmentation, optionally with nnU-Net intensity."""
     patch_size = (image_size, image_size)
+    intensity = nnunet_intensity_transforms() if augmentation == "nnunet" else []
     return Compose(
         [
             SpatialTransform_2(
@@ -95,13 +137,14 @@ def build_augmentation(image_size: int) -> Compose:
                 (0.7, 1.5), per_channel=True, p_per_sample=0.15
             ),
             GaussianNoiseTransform(noise_variance=(0, 0.05), p_per_sample=0.15),
+            *intensity,
         ]
     )
 
 
 class AugmentCollate:
-    def __init__(self, image_size: int) -> None:
-        self.transform = build_augmentation(image_size)
+    def __init__(self, image_size: int, augmentation: str = "official") -> None:
+        self.transform = build_augmentation(image_size, augmentation)
 
     def __call__(
         self, batch: Sequence[tuple[np.ndarray, np.ndarray]]
@@ -136,13 +179,24 @@ class DiceCrossEntropyLoss(nn.Module):
         return cross_entropy + dice_loss
 
 
-def default_output_path() -> Path:
+ARCHITECTURE_NAMES = {"resunet34": "ResUNet34", "nnunet": "nnUNet2D"}
+
+
+def default_output_path(arch: str, task: str) -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return CHECKPOINT_DIR / f"domain_A_ResUNet34_last_{stamp}.pth"
+    prefix = "domain_A" if task == "odoc" else f"{task}_domain_A"
+    return CHECKPOINT_DIR / f"{prefix}_{ARCHITECTURE_NAMES[arch]}_last_{stamp}.pth"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--task", choices=list(TASKS), default="odoc")
+    parser.add_argument("--arch", choices=list(ARCHITECTURES), default="resunet34")
+    parser.add_argument(
+        "--augmentation",
+        choices=AUGMENTATIONS,
+        help="Default: official for OD/OC, nnunet (official + nnU-Net intensity) for prostate",
+    )
     parser.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     parser.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
     parser.add_argument("--workers", type=int, default=TrainConfig.workers)
@@ -157,7 +211,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def train(args: argparse.Namespace) -> None:
+    task = TASKS[args.task]
+    if args.augmentation is None:
+        args.augmentation = "official" if task.name == "odoc" else "nnunet"
     config = TrainConfig(
+        image_size=task.image_size,
+        num_classes=task.num_classes,
         epochs=args.epochs,
         batch_size=args.batch_size,
         workers=args.workers,
@@ -167,10 +226,11 @@ def train(args: argparse.Namespace) -> None:
         raise ValueError("epochs/batch-size must be positive and workers cannot be negative")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for the paper configuration, but CUDA is unavailable")
-    if not INITIAL_CHECKPOINT.is_file():
+    pretrained = args.arch == "resunet34"
+    if pretrained and not INITIAL_CHECKPOINT.is_file():
         raise FileNotFoundError(f"Initialization checkpoint not found: {INITIAL_CHECKPOINT}")
 
-    output_path = args.output.resolve() if args.output else default_output_path()
+    output_path = args.output.resolve() if args.output else default_output_path(args.arch, args.task)
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite existing checkpoint: {output_path}")
     if output_path.resolve() == INITIAL_CHECKPOINT.resolve():
@@ -178,7 +238,7 @@ def train(args: argparse.Namespace) -> None:
 
     seed_everything(config.seed)
     device = torch.device("cuda:0")
-    dataset = DomainADataset(DOMAIN_A_DIR, config.image_size)
+    dataset = task.source_dataset()
     generator = torch.Generator().manual_seed(config.seed)
     loader = DataLoader(
         dataset,
@@ -187,14 +247,22 @@ def train(args: argparse.Namespace) -> None:
         num_workers=config.workers,
         pin_memory=True,
         drop_last=False,
-        collate_fn=AugmentCollate(config.image_size),
+        collate_fn=AugmentCollate(config.image_size, args.augmentation),
         generator=generator,
         persistent_workers=config.workers > 0,
     )
 
-    model = ResUnet34(config.num_classes)
-    state_dict = torch.load(INITIAL_CHECKPOINT, map_location="cpu", weights_only=True)
-    model.load_state_dict(state_dict, strict=True)
+    if args.arch == "nnunet":
+        model = ARCHITECTURES[args.arch](config.num_classes, config.image_size)
+    else:
+        model = ARCHITECTURES[args.arch](config.num_classes)
+    if pretrained:
+        state_dict = torch.load(INITIAL_CHECKPOINT, map_location="cpu", weights_only=True)
+        if task.name == "odoc":
+            model.load_state_dict(state_dict, strict=True)
+        else:
+            encoder = {key: value for key, value in state_dict.items() if key.startswith("res.")}
+            model.load_state_dict(encoder, strict=False)
     model.to(device)
 
     criterion = DiceCrossEntropyLoss(config.num_classes)
@@ -212,18 +280,21 @@ def train(args: argparse.Namespace) -> None:
     )
 
     print(f"Device: {device} ({torch.cuda.get_device_name(device)})")
-    print(f"Domain A: {DOMAIN_A_DIR} ({len(dataset)} image/mask pairs)")
-    print(f"Initialization: {INITIAL_CHECKPOINT}")
+    print(f"Task: {task.name}, domain A ({len(dataset)} image/mask pairs)")
+    print(f"Architecture: {args.arch}")
+    print(f"Augmentation: {args.augmentation}")
+    if not pretrained:
+        initialization = "nnU-Net He initialization"
+    elif task.name == "odoc":
+        initialization = str(INITIAL_CHECKPOINT)
+    else:
+        initialization = f"{INITIAL_CHECKPOINT} (ImageNet ResNet-34 encoder only)"
+    print(f"Initialization: {initialization}")
     print(f"Final checkpoint: {output_path}")
     print(f"Configuration: {asdict(config)}")
 
     model.train()
     for epoch in range(config.epochs):
-        print(
-            f"Epoch {epoch + 1:03d}/{config.epochs}: "
-            f"loss={total_loss / seen:.6f}, lr={optimizer.param_groups[0]['lr']:.8g}"
-        )
-
         total_loss = 0.0
         seen = 0
         for images, targets in loader:

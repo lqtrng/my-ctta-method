@@ -1,4 +1,4 @@
-"""OD/OC benchmark data: the source domain A and the B/C/D/E target stream."""
+"""Benchmark data: OD/OC (source A, target stream B-E) and prostate MRI (domains A-F)."""
 
 from __future__ import annotations
 
@@ -12,10 +12,15 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-from common.paths import DATA_DIR, DRISHTI_ARCHIVE
+from common.paths import DATA_DIR, DRISHTI_ARCHIVE, PROSTATE_DIR
 
 
 EXPECTED_COUNTS = {"B": 400, "C": 650, "D": 800, "E": 101}
+# Six-site prostate MRI (0140.pdf, Section 4.1): slices that contain prostate,
+# 384 x 384, laid out by download/prepare_prostate.py.
+PROSTATE_SITES = {"A": "BIDMC", "B": "BMC", "C": "HK", "D": "I2CVB", "E": "RUNMC", "F": "UCL"}
+PROSTATE_EXPECTED_COUNTS = {"A": 261, "B": 384, "C": 158, "D": 468, "E": 421, "F": 175}
+PROSTATE_IMAGE_SIZE = 384
 
 
 @dataclass(frozen=True)
@@ -113,6 +118,26 @@ def build_domains(selected: list[str], max_images: int | None) -> dict[str, list
     }
 
 
+def build_prostate_domains(selected: list[str], max_images: int | None) -> dict[str, list[Sample]]:
+    """Prostate domains in stream order; slices are ordered by case, then slice index.
+
+    Masks are class-index PNGs (0 background, 1 prostate), so ``load_sample``
+    returns them unchanged.
+    """
+    domains: dict[str, list[Sample]] = {}
+    for domain in sorted(selected):
+        site = PROSTATE_SITES[domain]
+        folder = PROSTATE_DIR / f"domain_{domain}_{site}"
+        samples = pair_directories(domain, site, folder / "Images", folder / "Masks")
+        if len(samples) != PROSTATE_EXPECTED_COUNTS[domain]:
+            raise RuntimeError(
+                f"Prostate domain {domain}: expected {PROSTATE_EXPECTED_COUNTS[domain]} "
+                f"slices, found {len(samples)}"
+            )
+        domains[domain] = samples[:max_images] if max_images is not None else samples
+    return domains
+
+
 def _read_archive_image(member: str) -> Image.Image:
     with ZipFile(DRISHTI_ARCHIVE) as archive, archive.open(member) as stream:
         image = Image.open(stream)
@@ -195,4 +220,31 @@ class DomainADataset(Dataset):
         target = np.zeros(raw.shape, dtype=np.int16)
         target[raw < 255] = 1
         target[raw == 0] = 2
+        return image_array, target[np.newaxis]
+
+
+class SampleDataset(Dataset):
+    """Labeled samples in the ``DomainADataset`` format, for source training.
+
+    Images are resized (bilinear; masks nearest) and min-max normalized per
+    image to [0, 1]; targets are class indices with a leading channel axis.
+    """
+
+    def __init__(self, samples: list[Sample], image_size: int) -> None:
+        self.samples = samples
+        self.image_size = (image_size, image_size)
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
+        image, target = load_sample(self.samples[index])
+        image = image.resize(self.image_size, Image.Resampling.BILINEAR)
+        target = np.asarray(
+            Image.fromarray(target).resize(self.image_size, Image.Resampling.NEAREST), dtype=np.int16
+        )
+        image_array = np.asarray(image, dtype=np.float32).transpose(2, 0, 1)
+        minimum = float(image_array.min())
+        maximum = float(image_array.max())
+        image_array = (image_array - minimum) / max(maximum - minimum, 1e-7)
         return image_array, target[np.newaxis]
