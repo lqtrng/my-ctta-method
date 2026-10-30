@@ -37,8 +37,9 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from common.paths import (  # noqa: E402
-    CHECKPOINT_DIR,
     DINOV3_ARCH,
+    DINOV3_FULL_IMAGE_HEAD_CHECKPOINT,
+    DINOV3_HEAD_CHECKPOINT,
     MODEL_DIR,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
     dinov3_weights,
@@ -47,12 +48,13 @@ from common.paths import (  # noqa: E402
 from common.protocol import seed_everything  # noqa: E402
 from common.redifm import structure_probabilities  # noqa: E402
 from common.tasks import TASKS, Task  # noqa: E402
+from common.tracking import log_metrics, tracked_run  # noqa: E402
 
 
 DEFAULT_DINOV3_DIR = MODEL_DIR
 DEFAULT_DINOV3_ARCH = DINOV3_ARCH
-DEFAULT_OUTPUT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_domain_A.pth"
-DEFAULT_FULL_IMAGE_OUTPUT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_full_image_domain_A.pth"
+DEFAULT_OUTPUT = DINOV3_HEAD_CHECKPOINT
+DEFAULT_FULL_IMAGE_OUTPUT = DINOV3_FULL_IMAGE_HEAD_CHECKPOINT
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -182,62 +184,65 @@ def main(args: argparse.Namespace) -> None:
     color = ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.08)
     resolution = args.crop_resolution
 
-    for epoch in range(args.epochs):
-        order = np.random.permutation(len(samples))
-        running = []
-        for start in tqdm(range(0, len(order), args.batch_size), desc=f"epoch {epoch}", leave=False):
-            crops, labels = [], []
-            for index in order[start : start + args.batch_size]:
-                image, target = samples[index]
-                image = torch.from_numpy(image).to(device)
-                target = torch.from_numpy(target[0].astype(np.int64)).to(device)
-                if args.full_image:
-                    top, left, side = 0, 0, target.shape[0]
-                else:
-                    top, left, side = jittered_box(
-                        target.cpu().numpy(), tuple(args.crop_scale), args.crop_shift, args.min_crop
+    method = "train_dinov3_full_image_head" if args.full_image else "train_dinov3_head"
+    with tracked_run(method, args):
+        for epoch in range(args.epochs):
+            order = np.random.permutation(len(samples))
+            running = []
+            for start in tqdm(range(0, len(order), args.batch_size), desc=f"epoch {epoch}", leave=False):
+                crops, labels = [], []
+                for index in order[start : start + args.batch_size]:
+                    image, target = samples[index]
+                    image = torch.from_numpy(image).to(device)
+                    target = torch.from_numpy(target[0].astype(np.int64)).to(device)
+                    if args.full_image:
+                        top, left, side = 0, 0, target.shape[0]
+                    else:
+                        top, left, side = jittered_box(
+                            target.cpu().numpy(), tuple(args.crop_scale), args.crop_shift, args.min_crop
+                        )
+                    crop = image[:, top : top + side, left : left + side]
+                    label = target[top : top + side, left : left + side]
+                    if random.random() < 0.5:
+                        crop, label = crop.flip(-1), label.flip(-1)
+                    crop = color(crop)
+                    crops.append(
+                        F.interpolate(crop[None], size=(resolution, resolution), mode="bilinear",
+                                      align_corners=False)[0]
                     )
-                crop = image[:, top : top + side, left : left + side]
-                label = target[top : top + side, left : left + side]
-                if random.random() < 0.5:
-                    crop, label = crop.flip(-1), label.flip(-1)
-                crop = color(crop)
-                crops.append(
-                    F.interpolate(crop[None], size=(resolution, resolution), mode="bilinear",
-                                  align_corners=False)[0]
+                    labels.append(
+                        F.interpolate(label[None, None].float(), size=(resolution, resolution),
+                                      mode="nearest")[0, 0].long()
+                    )
+                tokens = dinov3_tokens(model, torch.stack(crops), tuple(args.layers))
+                logits = F.interpolate(
+                    head(tokens), size=(resolution, resolution), mode="bilinear", align_corners=False
                 )
-                labels.append(
-                    F.interpolate(label[None, None].float(), size=(resolution, resolution),
-                                  mode="nearest")[0, 0].long()
-                )
-            tokens = dinov3_tokens(model, torch.stack(crops), tuple(args.layers))
-            logits = F.interpolate(
-                head(tokens), size=(resolution, resolution), mode="bilinear", align_corners=False
-            )
-            loss = dice_cross_entropy(logits, torch.stack(labels), task)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            running.append(float(loss))
-        print(f"epoch {epoch}: loss={np.mean(running):.4f}", flush=True)
+                loss = dice_cross_entropy(logits, torch.stack(labels), task)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                running.append(float(loss))
+            print(f"epoch {epoch}: loss={np.mean(running):.4f}", flush=True)
+            log_metrics({"train_loss": float(np.mean(running))}, step=epoch + 1)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "state_dict": head.state_dict(),
-            "dinov3_arch": args.dinov3_arch,
-            "layers": args.layers,
-            "hidden": args.hidden,
-            "task": args.task,
-            "num_classes": task.num_classes,
-            "crop_resolution": resolution,
-            "full_image": args.full_image,
-            "config": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-        },
-        args.output,
-    )
-    print(f"Saved: {args.output}")
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "state_dict": head.state_dict(),
+                "dinov3_arch": args.dinov3_arch,
+                "layers": args.layers,
+                "hidden": args.hidden,
+                "task": args.task,
+                "num_classes": task.num_classes,
+                "crop_resolution": resolution,
+                "full_image": args.full_image,
+                "config": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+            },
+            args.output,
+        )
+        print(f"Saved: {args.output}")
 
 
 if __name__ == "__main__":

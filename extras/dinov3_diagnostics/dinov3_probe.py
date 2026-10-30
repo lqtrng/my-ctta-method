@@ -2,7 +2,7 @@
 import sys, time
 from pathlib import Path
 import numpy as np, torch, torch.nn.functional as F, timm
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from common.protocol import prepare_sample, image_to_tensor, binary_dice_numpy
 from common.redifm import structure_probabilities, largest_component
 from common.models import NUM_CLASSES, ResUnet34

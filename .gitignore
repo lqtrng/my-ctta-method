@@ -54,3 +54,7 @@ runs/
 
 # Third-party source code, cloned by src/download/download.py
 third_party/
+
+# MLflow store (src/common/tracking.py) and downloaded/staged asset bundles
+mlruns/
+.cache/

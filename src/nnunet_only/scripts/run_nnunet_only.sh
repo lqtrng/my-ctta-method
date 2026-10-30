@@ -3,8 +3,8 @@
 # Trains the nnU-Net source model on domain A first if it is missing.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-PY=.venv/bin/python
-CKPT=$($PY -c "import sys; sys.path.insert(0, 'src'); from common.paths import NNUNET_SOURCE_CHECKPOINT as c; print(c)")
+PY=${PYTHON:-.venv/bin/python}
+CKPT=$($PY src/common/paths.py NNUNET_SOURCE_CHECKPOINT)
 
 if [ ! -f "$CKPT" ]; then
   $PY src/source_training/train.py --arch nnunet --output "$CKPT"

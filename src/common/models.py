@@ -177,3 +177,10 @@ def NnUNet2D(num_classes: int = 3, image_size: int = 512) -> nn.Module:
 
 
 ARCHITECTURES = {"resunet34": ResUnet34, "nnunet": NnUNet2D}
+
+
+def build_network(arch: str, num_classes: int, image_size: int) -> nn.Module:
+    """Untrained source/target network; nnU-Net's depth depends on the image size."""
+    if arch == "nnunet":
+        return NnUNet2D(num_classes, image_size)
+    return ResUnet34(num_classes)

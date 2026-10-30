@@ -4,7 +4,7 @@
 # Requires the DINOv3 weights and decoder head (see src/redifm_dinov3/scripts/run_dinov3_all_domains.sh).
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-PY=.venv/bin/python
+PY=${PYTHON:-.venv/bin/python}
 SEEDS=${SEEDS:-"0 1 2"}
 ROUNDS=${ROUNDS:-3}
 mkdir -p results/redifm_dinov3

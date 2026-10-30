@@ -28,6 +28,7 @@ if str(SRC_DIR) not in sys.path:
 
 from common.data import atomic_json_write, build_domains  # noqa: E402
 from common.paths import DINOV3_ARCH, MODEL_DIR, RESULTS_DIR  # noqa: E402
+from common.tracking import log_result, tracked_run  # noqa: E402
 from common.protocol import (  # noqa: E402
     DomainResult,
     image_dice,
@@ -113,49 +114,51 @@ def main(args: argparse.Namespace) -> None:
     print("Protocol: no adaptation; one frozen DINOv3 predicts every target image once")
     print("Metric: mean per-image DSC; OD includes the OC region")
 
-    results: list[DomainResult] = []
-    per_image: list[dict[str, Any]] = []
-    for domain, samples in domains.items():
-        disc_scores: list[float] = []
-        cup_scores: list[float] = []
-        for sample in tqdm(samples, desc=f"DINOv3 single domain {domain}"):
-            image, target = prepare_sample(sample, args.image_size)
-            target = target.to(device)
-            prediction = segmenter(image_to_tensor(image, device)).argmax(dim=1)[0]
-            disc_score = image_dice(prediction >= 1, target >= 1)
-            cup_score = image_dice(prediction == 2, target == 2)
-            disc_scores.append(disc_score)
-            cup_scores.append(cup_score)
-            per_image.append(
-                {
-                    "domain": domain,
-                    "image": sample.identifier,
-                    "disc_dsc": disc_score,
-                    "cup_dsc": cup_score,
-                    "mean_dsc": (disc_score + cup_score) / 2.0,
-                }
+    with tracked_run("dinov3_single", args):
+        results: list[DomainResult] = []
+        per_image: list[dict[str, Any]] = []
+        for domain, samples in domains.items():
+            disc_scores: list[float] = []
+            cup_scores: list[float] = []
+            for sample in tqdm(samples, desc=f"DINOv3 single domain {domain}"):
+                image, target = prepare_sample(sample, args.image_size)
+                target = target.to(device)
+                prediction = segmenter(image_to_tensor(image, device)).argmax(dim=1)[0]
+                disc_score = image_dice(prediction >= 1, target >= 1)
+                cup_score = image_dice(prediction == 2, target == 2)
+                disc_scores.append(disc_score)
+                cup_scores.append(cup_score)
+                per_image.append(
+                    {
+                        "domain": domain,
+                        "image": sample.identifier,
+                        "disc_dsc": disc_score,
+                        "cup_dsc": cup_score,
+                        "mean_dsc": (disc_score + cup_score) / 2.0,
+                    }
+                )
+            result = domain_result(domain, samples[0].dataset, disc_scores, cup_scores)
+            results.append(result)
+            print(
+                f"Domain {domain} ({result.dataset}, n={result.images}): "
+                f"OD={result.disc_dsc:.2f}, OC={result.cup_dsc:.2f}, Mean={result.mean_dsc:.2f}"
             )
-        result = domain_result(domain, samples[0].dataset, disc_scores, cup_scores)
-        results.append(result)
-        print(
-            f"Domain {domain} ({result.dataset}, n={result.images}): "
-            f"OD={result.disc_dsc:.2f}, OC={result.cup_dsc:.2f}, Mean={result.mean_dsc:.2f}"
-        )
 
-    do_a = float(np.mean([result.mean_dsc for result in results]))
-    print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
+        do_a = float(np.mean([result.mean_dsc for result in results]))
+        print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
 
-    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-    payload = {
-        "protocol": "dinov3_single_no_adaptation",
-        "source_domain": "A",
-        "config": config,
-        "target_domains": [asdict(result) for result in results],
-        "do_a_dsc": do_a,
-        "per_image": per_image,
-    }
-    atomic_json_write(args.output, payload)
-    print(f"Saved: {args.output.resolve()}")
+        config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+        payload = {
+            "protocol": "dinov3_single_no_adaptation",
+            "source_domain": "A",
+            "config": config,
+            "target_domains": [asdict(result) for result in results],
+            "do_a_dsc": do_a,
+            "per_image": per_image,
+        }
+        atomic_json_write(args.output, payload)
+        log_result(payload, args.output)
+        print(f"Saved: {args.output.resolve()}")
 
 
 if __name__ == "__main__":

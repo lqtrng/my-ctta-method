@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ReDi-FM/DINOv3 on the full Domain-A protocol: continual stream B -> C -> D -> E,
 # no reset between domains, Do. A = unweighted mean of the four domain DSCs.
-# Prerequisite (one-off): .venv/bin/python src/download/download.py dinov3
+# Prerequisite (one-off): $PY src/download/download.py dinov3
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-PY=.venv/bin/python
-HEAD=$($PY -c "import sys; sys.path.insert(0, 'src'); from redifm_dinov3.adapt import DEFAULT_HEAD_CHECKPOINT as h; print(h)")
+PY=${PYTHON:-.venv/bin/python}
+HEAD=$($PY src/common/paths.py DINOV3_HEAD_CHECKPOINT)
 SEEDS=${SEEDS:-"0 1 2"}
 
 if [ ! -f "$HEAD" ]; then

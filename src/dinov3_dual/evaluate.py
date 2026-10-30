@@ -36,6 +36,7 @@ if str(SRC_DIR) not in sys.path:
 
 from common.data import atomic_json_write, build_domains  # noqa: E402
 from common.paths import RESULTS_DIR  # noqa: E402
+from common.tracking import log_result, tracked_run  # noqa: E402
 from common.protocol import (  # noqa: E402
     DomainResult,
     image_dice,
@@ -50,7 +51,11 @@ from common.redifm import (  # noqa: E402
     structure_probabilities,
 )
 from dinov3_single.evaluate import FullImageSegmenter, domain_result  # noqa: E402
-from redifm_dinov3.adapt import DinoV3Segmenter, build_parser as build_crop_parser  # noqa: E402
+from redifm_dinov3.adapt import (  # noqa: E402
+    DinoV3Segmenter,
+    build_parser as build_crop_parser,
+    resolve_task_defaults,
+)
 from redifm_dinov3.train_head import DEFAULT_FULL_IMAGE_OUTPUT  # noqa: E402
 
 
@@ -92,6 +97,7 @@ def main(args: argparse.Namespace, crop_args: argparse.Namespace) -> None:
 
     # The crop teacher owns the frozen DINOv3; the full-image head shares it.
     crop_args.candidates = "head"
+    resolve_task_defaults(crop_args)
     crop_teacher = DinoV3Segmenter(crop_args, device)
     full_image = FullImageSegmenter(
         crop_teacher.model, args.full_head_checkpoint, crop_args.dinov3_arch, device
@@ -101,77 +107,79 @@ def main(args: argparse.Namespace, crop_args: argparse.Namespace) -> None:
     print("Protocol: no adaptation; two frozen DINOv3 predictions fused per target image")
     print("Metric: mean per-image DSC; OD includes the OC region")
 
-    results: dict[str, list[DomainResult]] = {variant: [] for variant in VARIANTS}
-    per_image: list[dict[str, Any]] = []
-    for domain, samples in domains.items():
-        scores = {variant: ([], []) for variant in VARIANTS}
-        for sample in tqdm(samples, desc=f"DINOv3 dual domain {domain}"):
-            image, target = prepare_sample(sample, args.image_size)
-            image_tensor = image_to_tensor(image, device)
-            target = target.to(device)
+    with tracked_run("dinov3_dual", argparse.Namespace(**{**vars(crop_args), **vars(args)})):
+        results: dict[str, list[DomainResult]] = {variant: [] for variant in VARIANTS}
+        per_image: list[dict[str, Any]] = []
+        for domain, samples in domains.items():
+            scores = {variant: ([], []) for variant in VARIANTS}
+            for sample in tqdm(samples, desc=f"DINOv3 dual domain {domain}"):
+                image, target = prepare_sample(sample, args.image_size)
+                image_tensor = image_to_tensor(image, device)
+                target = target.to(device)
 
-            full_classes = full_image(image_tensor)
-            full_structures = structure_probabilities(full_classes)
-            full_masks = full_structures > args.pseudo_threshold
-            crop_masks, crop_structures, _ = crop_teacher.supervision(
-                image, image_tensor, full_structures, args.pseudo_threshold
-            )
-            consensus = consensus_score(full_masks, crop_masks)
-            fused = fuse(full_structures, crop_structures, consensus)
-            predictions = {
-                "full_image": full_classes.argmax(dim=1)[0],
-                "crop": nested_foundation_classes(crop_structures).argmax(dim=1)[0],
-                "fused": nested_foundation_classes(fused).argmax(dim=1)[0],
-            }
+                full_classes = full_image(image_tensor)
+                full_structures = structure_probabilities(full_classes)
+                full_masks = full_structures > args.pseudo_threshold
+                crop_masks, crop_structures, _ = crop_teacher.supervision(
+                    image, image_tensor, full_structures, args.pseudo_threshold
+                )
+                consensus = consensus_score(full_masks, crop_masks)
+                fused = fuse(full_structures, crop_structures, consensus)
+                predictions = {
+                    "full_image": full_classes.argmax(dim=1)[0],
+                    "crop": nested_foundation_classes(crop_structures).argmax(dim=1)[0],
+                    "fused": nested_foundation_classes(fused).argmax(dim=1)[0],
+                }
 
-            row: dict[str, Any] = {
-                "domain": domain,
-                "image": sample.identifier,
-                "consensus": float(consensus),
-            }
-            for variant, prediction in predictions.items():
-                disc_score = image_dice(prediction >= 1, target >= 1)
-                cup_score = image_dice(prediction == 2, target == 2)
-                scores[variant][0].append(disc_score)
-                scores[variant][1].append(cup_score)
-                prefix = "" if variant == SCORED else f"{variant}_"
-                row[f"{prefix}disc_dsc"] = disc_score
-                row[f"{prefix}cup_dsc"] = cup_score
-                row[f"{prefix}mean_dsc"] = (disc_score + cup_score) / 2.0
-            per_image.append(row)
+                row: dict[str, Any] = {
+                    "domain": domain,
+                    "image": sample.identifier,
+                    "consensus": float(consensus),
+                }
+                for variant, prediction in predictions.items():
+                    disc_score = image_dice(prediction >= 1, target >= 1)
+                    cup_score = image_dice(prediction == 2, target == 2)
+                    scores[variant][0].append(disc_score)
+                    scores[variant][1].append(cup_score)
+                    prefix = "" if variant == SCORED else f"{variant}_"
+                    row[f"{prefix}disc_dsc"] = disc_score
+                    row[f"{prefix}cup_dsc"] = cup_score
+                    row[f"{prefix}mean_dsc"] = (disc_score + cup_score) / 2.0
+                per_image.append(row)
 
-        for variant, (disc_scores, cup_scores) in scores.items():
-            result = domain_result(domain, samples[0].dataset, disc_scores, cup_scores)
-            results[variant].append(result)
-            print(
-                f"Domain {domain} ({result.dataset}, n={result.images}) [{variant}]: "
-                f"OD={result.disc_dsc:.2f}, OC={result.cup_dsc:.2f}, Mean={result.mean_dsc:.2f}"
-            )
+            for variant, (disc_scores, cup_scores) in scores.items():
+                result = domain_result(domain, samples[0].dataset, disc_scores, cup_scores)
+                results[variant].append(result)
+                print(
+                    f"Domain {domain} ({result.dataset}, n={result.images}) [{variant}]: "
+                    f"OD={result.disc_dsc:.2f}, OC={result.cup_dsc:.2f}, Mean={result.mean_dsc:.2f}"
+                )
 
-    do_a = {variant: float(np.mean([r.mean_dsc for r in rows])) for variant, rows in results.items()}
-    for variant, value in do_a.items():
-        print(f"Do. A DSC [{variant}] (unweighted {'/'.join(args.domains)} domain mean): {value:.2f}")
+        do_a = {variant: float(np.mean([r.mean_dsc for r in rows])) for variant, rows in results.items()}
+        for variant, value in do_a.items():
+            print(f"Do. A DSC [{variant}] (unweighted {'/'.join(args.domains)} domain mean): {value:.2f}")
 
-    config = {
-        key: str(value) if isinstance(value, Path) else value
-        for key, value in {**vars(crop_args), **vars(args)}.items()
-    }
-    payload = {
-        "protocol": "dinov3_dual_no_adaptation",
-        "source_domain": "A",
-        "config": config,
-        "scored_variant": SCORED,
-        "target_domains": [asdict(result) for result in results[SCORED]],
-        "do_a_dsc": do_a[SCORED],
-        "diagnostic_variants": {
-            variant: {"target_domains": [asdict(r) for r in rows], "do_a_dsc": do_a[variant]}
-            for variant, rows in results.items()
-            if variant != SCORED
-        },
-        "per_image": per_image,
-    }
-    atomic_json_write(args.output, payload)
-    print(f"Saved: {args.output.resolve()}")
+        config = {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in {**vars(crop_args), **vars(args)}.items()
+        }
+        payload = {
+            "protocol": "dinov3_dual_no_adaptation",
+            "source_domain": "A",
+            "config": config,
+            "scored_variant": SCORED,
+            "target_domains": [asdict(result) for result in results[SCORED]],
+            "do_a_dsc": do_a[SCORED],
+            "diagnostic_variants": {
+                variant: {"target_domains": [asdict(r) for r in rows], "do_a_dsc": do_a[variant]}
+                for variant, rows in results.items()
+                if variant != SCORED
+            },
+            "per_image": per_image,
+        }
+        atomic_json_write(args.output, payload)
+        log_result(payload, args.output)
+        print(f"Saved: {args.output.resolve()}")
 
 
 if __name__ == "__main__":

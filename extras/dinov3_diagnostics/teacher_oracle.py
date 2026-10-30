@@ -1,6 +1,6 @@
 """Offline teacher-quality check: DSC of the selected DINOv3 masks vs GT on domain B."""
 import sys, argparse, itertools, json
-sys.path.insert(0, __file__.rsplit("/redifm_dinov3/", 1)[0])
+sys.path.insert(0, __file__.rsplit("/extras/", 1)[0] + "/src")
 import numpy as np, torch, torch.nn.functional as F
 import redifm_dinov3.adapt as R
 from common.models import ResUnet34

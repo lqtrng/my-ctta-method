@@ -42,9 +42,8 @@ if str(SRC_DIR) not in sys.path:
 from common.data import Sample, atomic_json_write  # noqa: E402
 from common.models import ResUnet34  # noqa: E402
 from common.paths import (  # noqa: E402
-    DEFAULT_SOURCE_CHECKPOINT,
-    PROSTATE_RESUNET_SOURCE_CHECKPOINT,
     RESULTS_DIR,
+    SOURCE_CHECKPOINTS,
     SAM_CHECKPOINT,
     require_file,
 )
@@ -67,12 +66,11 @@ from common.redifm import (  # noqa: E402
     weighted_binary_segmentation_loss,
 )
 from common.tasks import TASKS  # noqa: E402
+from common.tracking import log_result, tracked_run  # noqa: E402
 
 
 DEFAULT_SAM_CHECKPOINT = SAM_CHECKPOINT
 DEFAULT_OUTPUT = RESULTS_DIR / "redifm_sam/proposed_redifm_domain_A.json"
-# Defaults per task; OD/OC keeps the paths above.
-SOURCE_CHECKPOINTS = {"odoc": DEFAULT_SOURCE_CHECKPOINT, "prostate": PROSTATE_RESUNET_SOURCE_CHECKPOINT}
 OUTPUTS = {
     "odoc": DEFAULT_OUTPUT,
     "prostate": RESULTS_DIR / "redifm_sam/prostate_proposed_redifm_domain_A.json",
@@ -329,7 +327,7 @@ def resolve_task_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Fill options left unset with the defaults of ``--task``."""
     task = TASKS[args.task]
     if args.source_checkpoint is None:
-        args.source_checkpoint = SOURCE_CHECKPOINTS[args.task]
+        args.source_checkpoint = SOURCE_CHECKPOINTS[(args.task, "resunet34")]
     if args.output is None:
         args.output = OUTPUTS[args.task]
     if args.domains is None:
@@ -411,43 +409,47 @@ def main(args: argparse.Namespace) -> None:
     print(f"Task: {task.name}, target domains {'/'.join(args.domains)}")
     print("Metric: mean per-image DSC" + ("; OD includes the OC region" if task.name == "odoc" else ""))
 
-    results, per_image = evaluate_stream(
-        source_model,
-        target_model,
-        predictor,
-        optimizer,
-        domains,
-        device,
-        args,
-    )
-    do_a = float(np.mean([result["mean_dsc"] for result in results]))
-    pooled_image_mean = float(np.mean([row["mean_dsc"] for row in per_image])) * 100.0
-    print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
-    print(f"Pooled target-image DSC (diagnostic only): {pooled_image_mean:.2f}")
+    with tracked_run("redifm_sam", args):
+        results, per_image = evaluate_stream(
+            source_model,
+            target_model,
+            predictor,
+            optimizer,
+            domains,
+            device,
+            args,
+        )
+        do_a = float(np.mean([result["mean_dsc"] for result in results]))
+        pooled_image_mean = float(np.mean([row["mean_dsc"] for row in per_image])) * 100.0
+        print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
+        print(f"Pooled target-image DSC (diagnostic only): {pooled_image_mean:.2f}")
 
-    payload = {
-        "protocol": "redifm_continual_test_time_adaptation",
-        "task": task.name,
-        "source_domain": "A",
-        "checkpoint": str(args.source_checkpoint.resolve()),
-        "target_device": str(device),
-        "source_device": str(source_device),
-        "sam_device": str(sam_device),
-        "image_size": args.image_size,
-        "target_domains": results,
-        "do_a_dsc": do_a,
-        "pooled_target_image_dsc": pooled_image_mean,
-        "paper_redifm_do_a_reference": PAPER_DO_A[task.name],
-        "per_image": per_image,
-    }
-    atomic_json_write(args.output, payload)
-    print(f"Saved: {args.output.resolve()}")
+        config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+        payload = {
+            "protocol": "redifm_continual_test_time_adaptation",
+            "task": task.name,
+            "source_domain": "A",
+            "config": config,
+            "checkpoint": str(args.source_checkpoint.resolve()),
+            "target_device": str(device),
+            "source_device": str(source_device),
+            "sam_device": str(sam_device),
+            "image_size": args.image_size,
+            "target_domains": results,
+            "do_a_dsc": do_a,
+            "pooled_target_image_dsc": pooled_image_mean,
+            "paper_redifm_do_a_reference": PAPER_DO_A[task.name],
+            "per_image": per_image,
+        }
+        atomic_json_write(args.output, payload)
+        log_result(payload, args.output)
+        print(f"Saved: {args.output.resolve()}")
 
-    if args.save_adapted_checkpoint is not None:
-        destination = args.save_adapted_checkpoint.resolve()
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(target_model.state_dict(), destination)
-        print(f"Saved adapted target model: {destination}")
+        if args.save_adapted_checkpoint is not None:
+            destination = args.save_adapted_checkpoint.resolve()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(target_model.state_dict(), destination)
+            print(f"Saved adapted target model: {destination}")
 
 
 if __name__ == "__main__":

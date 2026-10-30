@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Reproduce the ReDi-FM/DINOv3 domain-B OD/OC evaluation (source: domain A).
-# Prerequisite (one-off): .venv/bin/python src/download/download.py dinov3
+# Prerequisite (one-off): $PY src/download/download.py dinov3
 # 1) one-off: train the frozen-backbone decoder on labeled source domain A only
 # 2) online continual test-time adaptation on target domain B, 3 seeds
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-PY=.venv/bin/python
-HEAD=$($PY -c "import sys; sys.path.insert(0, 'src'); from redifm_dinov3.adapt import DEFAULT_HEAD_CHECKPOINT as h; print(h)")
+PY=${PYTHON:-.venv/bin/python}
+HEAD=$($PY src/common/paths.py DINOV3_HEAD_CHECKPOINT)
 
 if [ ! -f "$HEAD" ]; then
   $PY src/redifm_dinov3/train_head.py --output "$HEAD"

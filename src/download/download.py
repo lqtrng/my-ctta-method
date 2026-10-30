@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Fetch the external model weights used by the methods in this repository.
+"""Fetch every external file used by the methods in this repository.
 
 This is the only script that downloads anything.  Every method loads its
-weights from the local paths in ``common/paths.py`` and fails with a pointer
+files from the local paths in ``common/paths.py`` and fails with a pointer
 back here when a file is missing.
 
-    python src/download/download.py              # fetch everything downloadable
+    python src/download/download.py              # fetch everything the main pipeline needs
     python src/download/download.py dinov3 sam   # fetch selected assets
     python src/download/download.py --check      # report what is present
 
-Assets that have no public download (datasets, the source ResUNet-34
-checkpoints, the MedCLIP-SAMv2 fine-tuned BiomedCLIP weights) are listed by
-``--check`` but must be placed by hand.
+Public foundation-model weights come from their official sources.  Files with
+no public download (the OD/OC data, the prepared prostate data, this
+project's checkpoints) come from the private Kaggle asset bundle, see
+``bundle.py``.  Assets marked optional are used only by ``extras/`` and are
+fetched only when named.
 """
 
 from __future__ import annotations
@@ -32,17 +34,21 @@ from common.paths import (  # noqa: E402
     BIOMEDCLIP_CHECKPOINT,
     BIOMEDCLIP_DIR,
     DATA_DIR,
-    DEFAULT_SOURCE_CHECKPOINT,
     DINOV3_ARCH,
+    DINOV3_FULL_IMAGE_HEAD_CHECKPOINT,
+    DINOV3_HEAD_CHECKPOINT,
     MEDDINOV3_CHECKPOINT,
     MEDDINOV3_REPO_DIR,
     MODEL_DIR,
     PRETRAINED_RESUNET_CHECKPOINT,
     PROSTATE_ARCHIVE,
+    PROSTATE_DINOV3_HEAD_CHECKPOINT,
     PROSTATE_DIR,
     SAM_CHECKPOINT,
+    SOURCE_CHECKPOINTS,
     dinov3_weights,
 )
+from download.bundle import link_from_bundle  # noqa: E402
 
 
 SAM_URL = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
@@ -61,6 +67,14 @@ class Asset:
     used_by: str
     fetch: Callable[[Path], None] | None = None
     manual: str = ""
+    # Used only by extras/: fetched only when named on the command line.
+    optional: bool = False
+    # A checkpoint reproduce.sh can train when the bundle does not have it.
+    trainable: bool = False
+
+
+def from_bundle(path: Path) -> None:
+    link_from_bundle(path)
 
 
 def fetch_dinov3(path: Path) -> None:
@@ -124,56 +138,76 @@ def fetch_biomedclip_config(path: Path) -> None:
     )
 
 
+def checkpoint(path: Path, used_by: str, trainable: bool = True) -> Asset:
+    return Asset(path, used_by, from_bundle, trainable=trainable)
+
+
 ASSETS = {
-    "dinov3": Asset(dinov3_weights(MODEL_DIR, DINOV3_ARCH), "redifm_dinov3", fetch_dinov3),
-    "meddinov3": Asset(MEDDINOV3_CHECKPOINT, "meddinov3", fetch_meddinov3),
-    "meddinov3-code": Asset(MEDDINOV3_REPO_DIR, "meddinov3", fetch_meddinov3_code),
-    "sam": Asset(SAM_CHECKPOINT, "redifm_sam, medclip_samv2", fetch_sam),
-    "biomedclip-config": Asset(BIOMEDCLIP_DIR / "config.json", "medclip_samv2", fetch_biomedclip_config),
+    # Public foundation models.
+    "dinov3": Asset(dinov3_weights(MODEL_DIR, DINOV3_ARCH), "redifm_dinov3, dinov3_*", fetch_dinov3),
+    "sam": Asset(SAM_CHECKPOINT, "redifm_sam", fetch_sam),
+    # Asset bundle (private Kaggle dataset).
+    "data": Asset(DATA_DIR, "all OD/OC methods", lambda _: from_bundle(DATA_DIR)),
+    "prostate": Asset(PROSTATE_DIR / "manifest.json", "prostate experiments", lambda _: from_bundle(PROSTATE_DIR)),
+    "pretrained-resunet": checkpoint(PRETRAINED_RESUNET_CHECKPOINT, "source_training", trainable=False),
+    **{
+        f"source-{task}-{arch}": checkpoint(path, f"every {task} method with --arch {arch}")
+        for (task, arch), path in SOURCE_CHECKPOINTS.items()
+    },
+    "dinov3-head": checkpoint(DINOV3_HEAD_CHECKPOINT, "redifm_dinov3 (odoc), dinov3_dual"),
+    "dinov3-full-image-head": checkpoint(DINOV3_FULL_IMAGE_HEAD_CHECKPOINT, "dinov3_single, dinov3_dual"),
+    "prostate-dinov3-head": checkpoint(PROSTATE_DINOV3_HEAD_CHECKPOINT, "redifm_dinov3 (prostate)"),
+    # extras/ only.
+    "prostate-public": Asset(
+        PROSTATE_ARCHIVE, "regenerating data/prostate-6 with prepare_prostate.py", fetch_prostate, optional=True
+    ),
+    "meddinov3": Asset(MEDDINOV3_CHECKPOINT, "meddinov3", fetch_meddinov3, optional=True),
+    "meddinov3-code": Asset(MEDDINOV3_REPO_DIR, "meddinov3", fetch_meddinov3_code, optional=True),
+    "biomedclip-config": Asset(
+        BIOMEDCLIP_DIR / "config.json", "extras/medclip_samv2", fetch_biomedclip_config, optional=True
+    ),
     "biomedclip-weights": Asset(
         BIOMEDCLIP_CHECKPOINT,
-        "medclip_samv2",
+        "extras/medclip_samv2",
         manual="fine-tuned BiomedCLIP pytorch_model.bin from the MedCLIP-SAMv2 release",
+        optional=True,
     ),
-    "source-checkpoint": Asset(
-        DEFAULT_SOURCE_CHECKPOINT, "all ReDi-FM methods, source_only", manual="ResUNet-34 trained on domain A"
-    ),
-    "pretrained-resunet": Asset(
-        PRETRAINED_RESUNET_CHECKPOINT, "source_training", manual="ResUNet-34 initialization"
-    ),
-    "data": Asset(DATA_DIR, "all methods", manual="OD/OC benchmark, domains A-E"),
-    "prostate": Asset(PROSTATE_DIR / "manifest.json", "prostate experiments", fetch_prostate),
 }
-
 
 def check() -> bool:
     ok = True
     for name, asset in ASSETS.items():
         present = asset.path.exists()
-        ok &= present
+        ok &= present or asset.optional
         how = "downloadable" if asset.fetch else f"manual: {asset.manual}"
-        print(f"[{'ok' if present else 'missing'}] {name:<19} {asset.path}")
+        if asset.optional:
+            how += "; optional"
+        print(f"[{'ok' if present else 'missing'}] {name:<26} {asset.path}")
         print(f"    used by {asset.used_by}; {how}")
     return ok
-
 
 def main() -> None:
     downloadable = [name for name, asset in ASSETS.items() if asset.fetch]
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("assets", nargs="*", choices=downloadable, help="default: all downloadable assets")
+    parser.add_argument("assets", nargs="*", choices=downloadable,
+                        help="default: every downloadable asset that is not optional")
     parser.add_argument("--check", action="store_true", help="only report which assets are present")
     parser.add_argument("--force", action="store_true", help="download even if the file exists")
     args = parser.parse_args()
     if args.check:
         sys.exit(0 if check() else 1)
-    for name in args.assets or downloadable:
+    for name in args.assets or [name for name in downloadable if not ASSETS[name].optional]:
         asset = ASSETS[name]
         if asset.path.exists() and not args.force:
             print(f"{name}: already present at {asset.path}")
             continue
-        print(f"{name}: downloading to {asset.path}")
-        asset.fetch(asset.path)
-
+        print(f"{name}: fetching to {asset.path}")
+        try:
+            asset.fetch(asset.path)
+        except FileNotFoundError as error:
+            if not asset.trainable:
+                raise
+            print(f"{name}: {error}\n    reproduce.sh trains it before it is used")
 
 if __name__ == "__main__":
     main()

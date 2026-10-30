@@ -58,10 +58,11 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.models import ARCHITECTURES  # noqa: E402
+from common.models import ARCHITECTURES, build_network  # noqa: E402
 from common.paths import CHECKPOINT_DIR, PRETRAINED_RESUNET_CHECKPOINT  # noqa: E402
 from common.protocol import seed_everything  # noqa: E402
 from common.tasks import TASKS  # noqa: E402
+from common.tracking import log_metrics, tracked_run  # noqa: E402
 
 
 INITIAL_CHECKPOINT = PRETRAINED_RESUNET_CHECKPOINT
@@ -252,10 +253,7 @@ def train(args: argparse.Namespace) -> None:
         persistent_workers=config.workers > 0,
     )
 
-    if args.arch == "nnunet":
-        model = ARCHITECTURES[args.arch](config.num_classes, config.image_size)
-    else:
-        model = ARCHITECTURES[args.arch](config.num_classes)
+    model = build_network(args.arch, config.num_classes, config.image_size)
     if pretrained:
         state_dict = torch.load(INITIAL_CHECKPOINT, map_location="cpu", weights_only=True)
         if task.name == "odoc":
@@ -293,37 +291,40 @@ def train(args: argparse.Namespace) -> None:
     print(f"Final checkpoint: {output_path}")
     print(f"Configuration: {asdict(config)}")
 
-    model.train()
-    for epoch in range(config.epochs):
-        total_loss = 0.0
-        seen = 0
-        for images, targets in loader:
-            images = images.to(device, non_blocking=True)
-            targets = targets.to(device, non_blocking=True)
-            optimizer.zero_grad(set_to_none=True)
-            loss = criterion(model(images), targets)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item() * images.shape[0]
-            seen += images.shape[0]
+    args.output = output_path
+    with tracked_run(f"train_source_{args.arch}", args):
+        model.train()
+        for epoch in range(config.epochs):
+            total_loss = 0.0
+            seen = 0
+            for images, targets in loader:
+                images = images.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
+                optimizer.zero_grad(set_to_none=True)
+                loss = criterion(model(images), targets)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item() * images.shape[0]
+                seen += images.shape[0]
 
-            if args.smoke_test:
-                print(f"Smoke test passed: loss={loss.item():.6f}, batch={tuple(images.shape)}")
-                return
+                if args.smoke_test:
+                    print(f"Smoke test passed: loss={loss.item():.6f}, batch={tuple(images.shape)}")
+                    return
 
-        scheduler.step()
-        print(
-            f"Epoch {epoch + 1:03d}/{config.epochs}: "
-            f"loss={total_loss / seen:.6f}, lr={optimizer.param_groups[0]['lr']:.8g}"
-        )
+            scheduler.step()
+            log_metrics({"train_loss": total_loss / seen, "lr": optimizer.param_groups[0]["lr"]}, step=epoch + 1)
+            print(
+                f"Epoch {epoch + 1:03d}/{config.epochs}: "
+                f"loss={total_loss / seen:.6f}, lr={optimizer.param_groups[0]['lr']:.8g}"
+            )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    if temporary_path.exists():
-        raise FileExistsError(f"Refusing to overwrite temporary file: {temporary_path}")
-    torch.save(model.state_dict(), temporary_path)
-    os.rename(temporary_path, output_path)
-    print(f"Saved final checkpoint only: {output_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+        if temporary_path.exists():
+            raise FileExistsError(f"Refusing to overwrite temporary file: {temporary_path}")
+        torch.save(model.state_dict(), temporary_path)
+        os.rename(temporary_path, output_path)
+        print(f"Saved final checkpoint only: {output_path}")
 
 
 if __name__ == "__main__":

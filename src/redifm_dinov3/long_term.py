@@ -30,9 +30,11 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.data import atomic_json_write, build_domains  # noqa: E402
+from common.data import atomic_json_write  # noqa: E402
 from common.paths import RESULTS_DIR  # noqa: E402
 from common.protocol import seed_everything  # noqa: E402
+from common.tasks import TASKS  # noqa: E402
+from common.tracking import log_result, tracked_run  # noqa: E402
 from redifm_dinov3.adapt import (  # noqa: E402
     build_parser,
     evaluate_stream,
@@ -45,12 +47,14 @@ DEFAULT_OUTPUT = RESULTS_DIR / "redifm_dinov3/long_term_domain_A.json"
 SOURCE_ONLY_RESULT = RESULTS_DIR / "source_only/baseline_no_adaptation_domain_A.json"
 
 
-def source_only_dsc(domains: list[str]) -> float:
-    """Do. A of the unadapted source model over the same target domains."""
-    payload = json.loads(SOURCE_ONLY_RESULT.read_text())
+def source_only_dsc(task: str, domains: list[str]) -> float:
+    """Do. A of the unadapted source model (``source_only/evaluate.py``) over the same domains."""
+    prefix = "" if task == "odoc" else f"{task}_"
+    result = SOURCE_ONLY_RESULT.with_name(f"{prefix}{SOURCE_ONLY_RESULT.name}")
+    payload = json.loads(result.read_text())
     scores = [row["mean_dsc"] for row in payload["target_domains"] if row["domain"] in domains]
     if len(scores) != len(domains):
-        raise RuntimeError(f"{SOURCE_ONLY_RESULT} does not cover domains {domains}")
+        raise RuntimeError(f"{result} does not cover domains {domains}")
     return float(np.mean(scores))
 
 
@@ -67,36 +71,35 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("--rounds must be positive")
     seed_everything(args.seed)
     device = torch.device(args.device)
-    domains = build_domains(args.domains, args.max_images)
+    domains = TASKS[args.task].build_domains(args.domains, args.max_images)
     source_model, target_model, segmenter, optimizer = load_models(args, device)
     print(f"Long-term CTTA: {args.rounds} rounds of {' -> '.join(domains)}, no reset")
 
-    rounds = []
-    for index in range(1, args.rounds + 1):
-        print(f"=== Round {index} ===")
-        results, _ = evaluate_stream(
-            source_model, target_model, segmenter, optimizer, domains, device, args
-        )
-        do_a = float(np.mean([result["mean_dsc"] for result in results]))
-        print(f"Round {index} Do. A DSC: {do_a:.2f}")
-        rounds.append(
-            {"round": index, "do_a_dsc": do_a, "target_domains": results}
+    with tracked_run("redifm_dinov3_long_term", args):
+        rounds = []
+        for index in range(1, args.rounds + 1):
+            print(f"=== Round {index} ===")
+            results, _ = evaluate_stream(
+                source_model, target_model, segmenter, optimizer, domains, device, args
+            )
+            do_a = float(np.mean([result["mean_dsc"] for result in results]))
+            print(f"Round {index} Do. A DSC: {do_a:.2f}")
+            rounds.append(
+                {"round": index, "do_a_dsc": do_a, "target_domains": results}
+            )
+
+        round_scores = [row["do_a_dsc"] for row in rounds]
+        average = float(np.mean(round_scores))
+        source_only = source_only_dsc(args.task, args.domains)
+        gain = average - source_only
+        degradation = round_scores[0] - average
+        print(
+            "Rounds: " + " | ".join(f"{score:.2f}" for score in round_scores)
+            + f" | Average {average:.2f} | Gain {gain:+.2f} | Perform. Degra. {degradation:.2f}"
         )
 
-    round_scores = [row["do_a_dsc"] for row in rounds]
-    average = float(np.mean(round_scores))
-    source_only = source_only_dsc(args.domains)
-    gain = average - source_only
-    degradation = round_scores[0] - average
-    print(
-        "Rounds: " + " | ".join(f"{score:.2f}" for score in round_scores)
-        + f" | Average {average:.2f} | Gain {gain:+.2f} | Perform. Degra. {degradation:.2f}"
-    )
-
-    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-    atomic_json_write(
-        args.output,
-        {
+        config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+        payload = {
             "protocol": "redifm_dinov3_long_term_ctta",
             "source_domain": "A",
             "config": config,
@@ -105,9 +108,10 @@ def main(args: argparse.Namespace) -> None:
             "source_only_dsc": source_only,
             "gain_dsc": gain,
             "performance_degradation": degradation,
-        },
-    )
-    print(f"Saved: {args.output.resolve()}")
+        }
+        atomic_json_write(args.output, payload)
+        log_result(payload, args.output)
+        print(f"Saved: {args.output.resolve()}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-import sys; sys.path.insert(0, __file__.rsplit("/redifm_dinov3/", 1)[0])
+import sys; sys.path.insert(0, __file__.rsplit("/extras/", 1)[0] + "/src")
 import numpy as np, torch, torch.nn.functional as F, argparse
 import redifm_dinov3.adapt as R
 from common.models import ResUnet34

@@ -65,7 +65,7 @@ Reading: there is no catastrophic forgetting. Round 3 is back within 0.2 of roun
 
 ## Offline teacher-quality diagnostics (no adaptation)
 
-These runs use `src/redifm_dinov3/diagnostics/teacher_quality.py` and `dinov3_probe.py` in the same folder. They score DSC of the selected DINOv3 mask (the "foundation teacher") against GT on all 400 B images. Source-model pseudo-label avg: 54.38.
+These runs use `extras/dinov3_diagnostics/teacher_quality.py` and `dinov3_probe.py` in the same folder (formerly `src/redifm_dinov3/diagnostics/`). They score DSC of the selected DINOv3 mask (the "foundation teacher") against GT on all 400 B images. Source-model pseudo-label avg: 54.38.
 
 | Variant | FM OD | FM OC | FM Avg | Note |
 |---|---|---|---|---|

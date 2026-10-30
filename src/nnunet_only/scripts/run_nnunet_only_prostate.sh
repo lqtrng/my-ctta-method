@@ -4,8 +4,8 @@
 # as the reference baseline of 0140.pdf Table 1.
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
-PY=.venv/bin/python
-path() { $PY -c "import sys; sys.path.insert(0, 'src'); from common.paths import $1 as p; print(p)"; }
+PY=${PYTHON:-.venv/bin/python}
+path() { $PY src/common/paths.py "$1"; }
 NNUNET=$(path PROSTATE_NNUNET_SOURCE_CHECKPOINT)
 RESUNET=$(path PROSTATE_RESUNET_SOURCE_CHECKPOINT)
 

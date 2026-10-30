@@ -46,17 +46,14 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from common.data import Sample, atomic_json_write  # noqa: E402
-from common.models import ARCHITECTURES  # noqa: E402
+from common.models import ARCHITECTURES, build_network  # noqa: E402
 from common.paths import (  # noqa: E402
-    CHECKPOINT_DIR,
-    DEFAULT_SOURCE_CHECKPOINT,
     DINOV3_ARCH,
+    DINOV3_HEAD_CHECKPOINT,
     MODEL_DIR,
-    NNUNET_SOURCE_CHECKPOINT,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
-    PROSTATE_NNUNET_SOURCE_CHECKPOINT,
-    PROSTATE_RESUNET_SOURCE_CHECKPOINT,
     RESULTS_DIR,
+    SOURCE_CHECKPOINTS,
     dinov3_weights,
     require_file,
 )
@@ -80,20 +77,14 @@ from common.redifm import (  # noqa: E402
     weighted_binary_segmentation_loss,
 )
 from common.tasks import TASKS, Task  # noqa: E402
+from common.tracking import log_result, tracked_run  # noqa: E402
 from redifm_dinov3.train_head import SegmentationHead  # noqa: E402
 
 
 DEFAULT_DINOV3_DIR = MODEL_DIR
 DEFAULT_DINOV3_ARCH = DINOV3_ARCH
 DEFAULT_OUTPUT = RESULTS_DIR / "redifm_dinov3/redifm_dinov3_domain_A.json"
-DEFAULT_HEAD_CHECKPOINT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_domain_A.pth"
-# Defaults per task and source/target network; OD/OC keeps the paths above.
-SOURCE_CHECKPOINTS = {
-    ("odoc", "resunet34"): DEFAULT_SOURCE_CHECKPOINT,
-    ("odoc", "nnunet"): NNUNET_SOURCE_CHECKPOINT,
-    ("prostate", "resunet34"): PROSTATE_RESUNET_SOURCE_CHECKPOINT,
-    ("prostate", "nnunet"): PROSTATE_NNUNET_SOURCE_CHECKPOINT,
-}
+DEFAULT_HEAD_CHECKPOINT = DINOV3_HEAD_CHECKPOINT
 HEAD_CHECKPOINTS = {"odoc": DEFAULT_HEAD_CHECKPOINT, "prostate": PROSTATE_DINOV3_HEAD_CHECKPOINT}
 METHOD_FOLDERS = {"resunet34": "redifm_dinov3", "nnunet": "redifm_dinov3_nnunet"}
 
@@ -114,6 +105,8 @@ def resolve_task_defaults(args: argparse.Namespace) -> argparse.Namespace:
         prefix = "" if args.task == "odoc" else f"{args.task}_"
         args.output = RESULTS_DIR / folder / f"{prefix}{folder}_domain_A.json"
     return args
+
+
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -517,22 +510,15 @@ def parse_args() -> argparse.Namespace:
     return resolve_task_defaults(build_parser().parse_args())
 
 
-def build_network(args: argparse.Namespace) -> nn.Module:
-    task = TASKS[args.task]
-    if args.arch == "nnunet":
-        return ARCHITECTURES[args.arch](task.num_classes, args.image_size)
-    return ARCHITECTURES[args.arch](num_classes=task.num_classes)
-
-
 def load_models(
     args: argparse.Namespace, device: torch.device
 ) -> tuple[nn.Module, nn.Module, DinoV3Segmenter, torch.optim.Optimizer]:
     resolve_task_defaults(args)
     state_dict = torch.load(args.source_checkpoint, map_location="cpu", weights_only=True)
-    source_model = build_network(args)
+    source_model = build_network(args.arch, TASKS[args.task].num_classes, args.image_size)
     source_model.load_state_dict(state_dict, strict=True)
     source_model.requires_grad_(False).to(device).eval()
-    target_model = build_network(args)
+    target_model = build_network(args.arch, TASKS[args.task].num_classes, args.image_size)
     target_model.load_state_dict(state_dict, strict=True)
     target_model.to(device).train()
     segmenter = DinoV3Segmenter(args, device)
@@ -558,35 +544,37 @@ def main(args: argparse.Namespace) -> None:
     else:
         print("Metric: mean per-image prostate DSC")
 
-    results, per_image = evaluate_stream(
-        source_model, target_model, segmenter, optimizer, domains, device, args
-    )
-    do_a = float(np.mean([result["mean_dsc"] for result in results]))
-    pooled_image_mean = float(np.mean([row["mean_dsc"] for row in per_image])) * 100.0
-    print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
-    print(f"Pooled target-image DSC (diagnostic only): {pooled_image_mean:.2f}")
+    with tracked_run(METHOD_FOLDERS[args.arch], args):
+        results, per_image = evaluate_stream(
+            source_model, target_model, segmenter, optimizer, domains, device, args
+        )
+        do_a = float(np.mean([result["mean_dsc"] for result in results]))
+        pooled_image_mean = float(np.mean([row["mean_dsc"] for row in per_image])) * 100.0
+        print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a:.2f}")
+        print(f"Pooled target-image DSC (diagnostic only): {pooled_image_mean:.2f}")
 
-    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-    payload = {
-        "protocol": "redifm_dinov3_continual_test_time_adaptation",
-        "task": task.name,
-        "source_domain": "A",
-        "config": config,
-        "target_domains": results,
-        "do_a_dsc": do_a,
-        "pooled_target_image_dsc": pooled_image_mean,
-        # 0140.pdf Table 1, ReDi-FM with SAM, source domain A.
-        "paper_redifm_do_a_reference": {"odoc": 73.11, "prostate": 66.10}[task.name],
-        "per_image": per_image,
-    }
-    atomic_json_write(args.output, payload)
-    print(f"Saved: {args.output.resolve()}")
+        config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+        payload = {
+            "protocol": "redifm_dinov3_continual_test_time_adaptation",
+            "task": task.name,
+            "source_domain": "A",
+            "config": config,
+            "target_domains": results,
+            "do_a_dsc": do_a,
+            "pooled_target_image_dsc": pooled_image_mean,
+            # 0140.pdf Table 1, ReDi-FM with SAM, source domain A.
+            "paper_redifm_do_a_reference": {"odoc": 73.11, "prostate": 66.10}[task.name],
+            "per_image": per_image,
+        }
+        atomic_json_write(args.output, payload)
+        log_result(payload, args.output)
+        print(f"Saved: {args.output.resolve()}")
 
-    if args.save_adapted_checkpoint is not None:
-        destination = args.save_adapted_checkpoint.resolve()
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(target_model.state_dict(), destination)
-        print(f"Saved adapted target model: {destination}")
+        if args.save_adapted_checkpoint is not None:
+            destination = args.save_adapted_checkpoint.resolve()
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(target_model.state_dict(), destination)
+            print(f"Saved adapted target model: {destination}")
 
 
 if __name__ == "__main__":
