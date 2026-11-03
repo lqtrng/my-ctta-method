@@ -1,228 +1,394 @@
-# ReDi-FM: OD/OC continual test-time adaptation
+# ReDi-FM: continual test-time adaptation for medical segmentation
 
-This repository reproduces ReDi-FM (`0140.pdf`) for optic disc (OD) and optic cup (OC) segmentation under continual test-time adaptation (CTTA). It also contains a variant in which the frozen SAM foundation model is replaced with a frozen DINOv3. The variant keeps ReDi-FM's idea of combining knowledge from the source model and a foundation model.
+Every result computed in this repository, then how to reproduce it. Three problems: OD/OC (fundus), prostate (MRI), and polyp (colonoscopy). Each trains on labeled domain A, then adapts online, one unlabeled image at a time, to the target domains in order, never resetting. The protocol is from `0140.pdf`.
 
-## Method
+## Results
 
-### Setting
-- **Source domain.** A ResUNet-34 is trained on labeled domain A (RIM-ONE-r3).
-- **Target stream.** At test time the model adapts online, without labels, to the unlabeled target stream B (REFUGE train) → C (ORIGA) → D (REFUGE val/test) → E (Drishti-GS). The stream runs in one pass with no reset between domains.
-- **Per-image procedure.** Each image arrives alone (batch size 1). The model takes one Adam step on it (lr 1e-4), then predicts the same image, and that prediction is scored.
-- **Metric.** Per-image Dice (DSC), averaged over OD and OC. OD includes the cup region. **Do. A** is the unweighted mean over domains B–E.
+**How to read the tables**
+- **Score:** per-image DSC, averaged per domain. **Do. A** is the unweighted mean over the target domains.
+- **Row IDs:** O = OD/OC, P = prostate, Y = polyp. Each row's ID links its score, its OD/OC breakdown and its setup.
+- **Tables per problem:** scores (adaptation, no adaptation, checks), then OD/OC per structure (OD includes the cup), then *Setup and source*. *Setup and source* gives the pipeline and links the result JSON, whose `config` holds every option and checkpoint.
+- **3 seeds:** mean ± std over seeds 0, 1 and 2. The per-domain cells are seed means, and each seed's Do. A is linked under *Setup and source*.
+- **† rows:** analysis scripts, not `src/evaluate.py`. The script is linked.
+- **Bold:** the best value in the column of that table.
 
-This protocol follows `0140.pdf` and CoTTA. It is implemented once in `src/common/` and shared by every method, so results are directly comparable.
+**Short names**
 
-### ReDi-FM (original, `src/redifm_sam/`)
-For each target image, two teachers supervise the adapting ResUNet-34 (the student):
+| Name | Meaning |
+|---|---|
+| **D3** | frozen DINOv3 ViT-L/16 |
+| **D3-full** | D3 + head trained on whole domain-A images |
+| **D3-crop** | D3 + head trained on crops |
+| **R34** | ResUNet-34 |
+| **nnU** | nnU-Net 2D with official training config |
+| **nnU\*** | nnU-Net 2D with wrong training config |
+| **crop-CNN** | a CNN trained on enlarged domain-A crops |
+| **blurry** | crop cut from the resized image |
+| **sharp** | the same crop cut from the full-size image |
+| **largest / all** | crop the largest predicted region, or every region |
+| **Crop-teach** | D3-full places the crops, a frozen crop-CNN on them is the teacher, a CNN target adapts (`redifm_dinov3_nnunet_crop`) |
 
-1. **Source teacher.** A frozen copy of the source model gives OD/OC probabilities. Thresholding at τ = 0.5 gives the source pseudo-masks.
-2. **Foundation-model teacher.** Structure-aware point prompts are derived from the source prediction: a center point and a hard point for each structure (Eqs. 2–4). They prompt a frozen SAM ViT-H. Among SAM's candidate masks, the one with the highest Dice against the source pseudo-mask is kept (Eq. 5).
-3. **Learning objective.**
-   - Hard distillation from both teachers, weighted by each teacher's pixel confidence Φ (Eqs. 6–8).
-   - Hard class-balanced soft distillation (Eqs. 10–12).
-   - A consensus gate *r*, the agreement between the two teachers' masks, which decides how much the source pseudo-label is trusted (Eqs. 13–16).
+### OD/OC — targets B REFUGE · C ORIGA · D REFUGE val/test · E Drishti-GS
 
-   Total loss: `L = L_hard(FM) + r · L_hard(source) + L_soft`.
+Paper (ReDi-FM + SAM): **73.11**.
 
-### ReDi-FM with DINOv3 (`src/redifm_dinov3/`)
-Only the foundation-model teacher changes. The protocol, student, optimizer, augmentation, source pseudo-labels and the whole learning objective (Eqs. 6–16) are imported unchanged from `src/common/`.
+**Adaptation**
 
-DINOv3 is a feature backbone with no prompt encoder or mask decoder, so the teacher is built as follows:
-
-1. **The prompt becomes a crop.** The largest connected component of the source OD mask defines a square region of interest. It has 2× the disc's extent and is at least 96 px wide.
-2. **Frozen DINOv3 encoding.** The crop is resized to 512×512 and encoded by DINOv3 ViT-L/16 (LVD-1689M weights, bf16). This gives a 32×32 grid of patch tokens from the last block.
-3. **Frozen decoder head.** A small convolutional head maps the tokens to background, disc-rim and cup probabilities. It has a 1×1 reduction to 256 channels, 2× upsampling and two 3×3 conv blocks. The head is the counterpart of SAM's mask decoder. It was trained once, before deployment, on labeled domain A only (`src/training/train_dinov3_head.py`), and no target data is ever used. Training samples are disc-centered crops with jittered scale and position, so the head tolerates the imperfect crops the source model produces under domain shift.
-4. **Teacher output.** The OD/OC probabilities are pasted back into the full image, with everything outside the crop treated as background. The result enters the unchanged ReDi-FM loss in place of SAM's mask and probability.
-
-DINOv3, the decoder head and the source teacher stay frozen. Only the student ResUNet-34 is updated, and only the student's prediction is scored.
-
-A training-free alternative is also available (`--candidates prototype`). It builds foreground prototypes from DINOv3 features at the structure-aware points, background prototypes from k-means over the confident source background, and then applies Eq. 5. On domain B it inherited the source model's under-segmentation (teacher DSC 63.8, against 77.0 for the head), so the head is the default. See `results/redifm_dinov3/EXPERIMENT_LOG.md` for the full history.
-
-### One adaptation step in detail
-Both methods run the same steps for every target image. They differ only in step 4. Code: `adaptation_step` in each `adapt.py`, plus `src/common/protocol.py` and `src/common/redifm.py`.
-
-#### Creating the samples
-1. **Load.** Read the RGB fundus image and its mask (`common/data.py`). Masks that use the benchmark convention (255 = background, 128 = disc rim, 0 = cup) are mapped to the classes {0 = background, 1 = rim, 2 = cup}. The mask is used only for scoring, never for adaptation.
-2. **Resize and normalize.** Resize the image to 512×512 with bilinear interpolation (the mask uses nearest-neighbour). Convert it to a tensor *x* and min-max normalize it per image to [0, 1] (`prepare_sample`, `image_to_tensor`).
-3. **Source sample.** The frozen source model gives class probabilities $p_s = \mathrm{softmax}(f_{src}(x))$ over (background, rim, cup). These are converted into nested structure probabilities, $P^{OD} = p_{rim} + p_{cup}$ and $P^{OC} = p_{cup}$, clamped to $[10^{-6}, 1 - 10^{-6}]$. The source pseudo-mask is $M_s = P_s > \tau$ with $\tau = 0.5$.
-4. **Foundation-model sample.** The teacher gives OD/OC probabilities $P_{fm}$ and the mask $M_{fm} = P_{fm} > 0.5$. SAM is prompted with structure-aware points. For DINOv3, the image is cropped around the source disc and normalized with ImageNet mean and std before encoding (see above). For the soft loss, $P_{fm}$ is also turned into nested class probabilities: $disc = P^{OD}_{fm}$, $cup = P^{OC}_{fm} \cdot disc$, $rim = disc - cup$, $background = 1 - disc$, renormalized to sum to 1 (`nested_foundation_classes`).
-5. **Student sample.** The student sees an augmented view $\tilde{x}$: ColorJitter (brightness 0.2, contrast 0.2, saturation 0.2, hue 0.05), then RandomErasing (p = 0.5, area 2–20 %, aspect 0.3–3.3, random values). The student runs in train mode, so BatchNorm uses the statistics of this image. This gives $p_t$ and $P_t$. Both teachers see the clean *x*; only the student sees $\tilde{x}$.
-
-#### Computing the loss
-- **Confidence weight (Eq. 6).** Each pixel is weighted by $\Phi(P) = \gamma - \mathcal{N}(P;\ 0.5,\ 0.1)$ with $\gamma = 1.3$. A teacher probability near 0.5 (uncertain) gets $\Phi \approx 0.04$; a confident one near 0 or 1 gets $\Phi \approx 0.94$. $\Phi_s$ is computed from $P_s$ and $\Phi_{fm}$ from $P_{fm}$.
-- **Weighted hard loss (Eqs. 7–8).** For a teacher mask *M* with weights Φ, applied to both the OD and OC channels:
-
-  $$L_{hard}(M, \Phi) = \overline{\Phi \cdot \mathrm{BCE}(P_t, M)} + 1 - \frac{1}{2}\sum_{k \in \{OD, OC\}} \frac{2\sum \Phi P_t M}{\sum \Phi P_t + \sum \Phi M}$$
-
-- **Consensus (Eq. 13).** $r = \frac{1}{2}\sum_{k} \mathrm{Dice}(M_s^k, M_{fm}^k)$, the agreement between the two teachers. It is detached from the gradient.
-- **Hard class-balanced soft loss (Eqs. 10–12, annealed by Eq. 15).**
-  - Take the argmax labels of the source ($\hat{y}_s$), the student ($\hat{y}_t$, detached) and the foundation model ($\hat{y}_{fm}$).
-  - A pixel is *highly uncertain* when the normalized entropy of $p_s$, $H(p_s)/\log 3$, exceeds 0.5.
-  - For each class *c*, compute $\eta_c = \big(|\hat{y}_{fm} = c| + |\hat{y}_t \neq \hat{y}_{fm}|\big) / (2HW)$.
-  - Pixels where $\hat{y}_s = c$, or that are highly uncertain, are *difficult* and get $\alpha_c = \eta_c$; the rest get $1 - \eta_c$.
-  - The weights are annealed by consensus, $\alpha_c \leftarrow r\,\alpha_c + (1 - r)$, so they fade to uniform when the teachers agree.
-
-  $$L_{soft} = -\,\overline{\sum_c \alpha_c\, p_{t,c} \log p_{fm,c}}$$
-
-- **Total loss (Eq. 16).**
-
-  $$L = L_{hard}(M_{fm}, \Phi_{fm}) + r \cdot L_{hard}(M_s, \Phi_s) + L_{soft}$$
-
-  The foundation-model teacher always supervises. The source pseudo-label counts only as much as the two teachers agree.
-- **Update and score.** Take one backward pass and one Adam step (lr 1e-4) on all student parameters. Then predict the clean *x* in eval mode, so BatchNorm statistics are not updated a second time, and take the argmax. Score OD as prediction ≥ 1 against ground truth ≥ 1, and OC as prediction = 2 against ground truth = 2. Then move to the next image without resetting.
-
-The paper does not give the entropy threshold (0.5) or the augmentation magnitudes. They are command-line options, saved in each result JSON.
-
-## Results (source domain A, Do. A DSC)
-
-| Method | B | C | D | E | **Do. A** |
-|---|---|---|---|---|---|
-| Source only | 54.54 | 47.62 | 39.31 | 73.20 | 53.67 |
-| ReDi-FM + SAM (our run, seed 42) | 72.46 | 69.94 | 68.76 | **75.75** | 71.73 |
-| ReDi-FM + SAM (paper) | | | | | 73.11 |
-| **ReDi-FM + DINOv3** (mean of seeds 0/1/2) | **78.88** | **77.61** | **79.22** | 74.49 | **77.55 ± 0.10** |
-| DINOv3 single (one full-image DINOv3, no ResUNet, no adaptation) | 51.17 | 82.80 | 59.83 | 84.62 | 69.61 |
-| DINOv3 dual (full-image DINOv3 + crop DINOv3, fused, no adaptation) | 41.52 | 85.10 | 61.75 | 84.01 | 68.09 |
-| nnU-Net only (nnU-Net 2D source model, no adaptation) | 75.80 | 60.20 | 67.43 | 74.78 | 69.55 |
-| ReDi-FM + DINOv3 with nnU-Net (seed 0) | 82.52 | 80.71 | 82.67 | 82.50 | 82.10 |
-| ReDi-FM with DINOv3 only (full-image DINOv3 as source, adapting its head; crop DINOv3 as foundation; seed 0) | 57.28 | 86.66 | 71.32 | 86.86 | 75.53 |
-| DINOv3 places the crop, crop ResUNet-34 teaches, ResUNet-34 adapts (`redifm_dinov3_nnunet_crop`, mean of seeds 0/1/2) | 80.70 | 85.33 | 76.75 | 82.73 | 81.38 ± 0.08 |
-| DINOv3 places the crop, crop ResUNet-34 predicts, no adaptation (`dinov3_crop`) | 40.52 | 67.69 | 44.40 | 78.25 | 57.72 |
-| The same, refining every DINOv3 region (`dinov3_crop --crop-region all`) | 79.01 | 67.06 | 35.17 | 78.22 | 64.87 |
-
-- **Where the gain comes from.** Almost all of it is in OC: +15 to +22 DSC on B, C and D. OD is on par with SAM.
-- **Forgetting check.** In the long-term check (the Table 3 protocol, 3 rounds of B→C→D→E, seed 0), the rounds give 77.57 / 75.97 / 77.39. That is an average of 76.98, a gain of +23.31 over source only, and a performance degradation of 0.59.
-- **Caveat.** The decoder head adds domain-A supervision that zero-shot SAM does not have. Design choices were also made with domain-B labels in view.
-- **Further detail** is in `results/redifm_dinov3/WRITEUP.md`.
-
-## Results (prostate, source domain A = BIDMC, prostate DSC)
-
-The source models are trained on domain A: ResUNet-34 with the repository recipe (`training/train_source.py --task prostate`), nnU-Net with nnU-Net v2's own defaults for 100 epochs (`training/train_nnunet.py`, `--arch nnunet_official`). The target stream is B → F, with no reset and seed 0.
-
-| Method | B (BMC) | C (HK) | D (I2CVB) | E (RUNMC) | F (UCL) | **Do. A** |
+| # | Method | B | C | D | E | **Do. A** |
 |---|---|---|---|---|---|---|
-| Source only, ResUNet-34 | 19.07 | 72.54 | 9.60 | 23.47 | 7.75 | 26.49 |
-| nnU-Net only (no adaptation) | 77.99 | 64.45 | 32.18 | 68.35 | 62.23 | 61.04 |
-| ReDi-FM + DINOv3, ResUNet-34 | 52.21 | 77.61 | 43.02 | 64.79 | 36.96 | 54.92 |
-| DINOv3 single (full-image head, no adaptation) | 82.34 | 79.98 | 60.63 | 64.84 | 47.70 | 67.10 |
-| ReDi-FM with DINOv3 only (full-image DINOv3 as source, adapting its head; crop DINOv3 as foundation) | **84.60** | 83.61 | 63.92 | 70.67 | 54.24 | 71.41 |
-| ReDi-FM + DINOv3, nnU-Net | 82.47 | 81.56 | 57.25 | 71.92 | 71.18 | 72.88 |
-| **DINOv3 places the crop, crop nnU-Net teaches, nnU-Net adapts** (`redifm_dinov3_nnunet_crop`, mean of seeds 0/1/2) | 84.03 | **84.34** | **68.82** | **79.11** | **77.94** | **78.85 ± 0.33** |
-| Paper (`0140.pdf` Table 1): Source Only / ReDi-FM + SAM | | | | | | 51.02 / 66.10 |
+| O1 | Crop-teach, blurry, all | 83.13 | 85.03 | 77.87 | 82.71 | 82.19 |
+| O2 | Crop-teach, blurry, largest (3 seeds) | 80.70 | 85.33 | 76.75 | 82.73 | 81.38 ± 0.08 |
+| O3 | Crop-teach, blurry, largest, lr 1e-4 | 76.92 | 80.86 | 73.64 | 76.96 | 77.09 |
+| O4 | Crop-teach, blurry, largest, stream D→B→C→E | 81.64 | 85.79 | 76.04 | 82.59 | 81.51 |
+| O5 | Crop-teach, sharp, all | **83.16** | 85.56 | 79.17 | 82.74 | **82.66** |
+| O6 | ReDi-FM + D3, nnU\* | 82.52 | 80.71 | **82.67** | 82.50 | 82.10 |
+| O7 | ReDi-FM + D3, R34 (3 seeds) | 78.88 | 77.61 | 79.22 | 74.49 | 77.54 ± 0.10 |
+| O8 | ReDi-FM + SAM (our run) | 72.46 | 69.94 | 68.76 | 75.75 | 71.73 |
+| O9 | ReDi-FM, D3 only | 57.28 | **86.66** | 71.32 | **86.86** | 75.53 |
 
-## Results (polyp, source domain A = BKAI-IGH NeoPolyp, DSC)
+**No adaptation**
 
-ResUNet-34 models and a DINOv3 head trained on domain A, seed 0. The paper uses Segformer-B0, so these are not comparable with its Table 2. Predicted masks are in `results/crop_teach_tta/polyp/masks/`.
+| # | Method | B | C | D | E | **Do. A** |
+|---|---|---|---|---|---|---|
+| O10 | D3 dual (Eq. 16 fusion) | 41.52 | **85.10** | 61.75 | 84.01 | 68.09 |
+| O11 | D3 single | 51.17 | 82.80 | 59.83 | **84.62** | **69.61** |
+| O12 | `dinov3_crop`, blurry, all | 79.01 | 67.06 | 35.17 | 78.22 | 64.87 |
+| O13 | `dinov3_crop`, blurry, largest | 40.52 | 67.69 | 44.40 | 78.25 | 57.72 |
+| O14 | `dinov3_crop`, blurry-trained crop-CNN given sharp test crops, all (D only) | | | 35.10 | | |
+| O15 | `dinov3_crop`, blurry-trained crop-CNN given sharp test crops, largest (D only) | | | 43.28 | | |
+| O16 | `dinov3_crop`, sharp, all | 72.69 | 69.65 | 45.12 | 76.60 | 66.01 |
+| O17 | Source only, nnU\* | **75.80** | 60.20 | **67.43** | 74.78 | 69.55 |
+| O18 | Source only, R34 | 54.54 | 47.62 | 39.31 | 73.20 | 53.67 |
 
-| Method | B (CVC-ClinicDB) | C (ETIS-Larib) | D (Kvasir-SEG) | **Do. A** |
+**Checks: the crop-CNN alone, crops placed from the ground truth (2× the disc)**
+
+| # | Method | B | C | D | E | **Mean** |
+|---|---|---|---|---|---|---|
+| O19 | † Blurry R34 crop-CNN | **81.26** | 65.28 | 60.58 | **76.35** | 70.87 |
+| O20 | † Sharp R34 crop-CNN | 80.73 | **68.39** | **68.39** | 74.74 | **73.06** |
+
+**OD and OC per domain**
+
+| # | B OD | B OC | C OD | C OC | D OD | D OC | E OD | E OC | **Mean OD** | **Mean OC** |
+|---|---|---|---|---|---|---|---|---|---|---|
+| O1 | 85.63 | 80.63 | 90.65 | 79.41 | 77.63 | 78.11 | 89.34 | 76.08 | 85.81 | 78.56 |
+| O2 | 82.34 | 79.06 | 90.88 | 79.78 | 76.53 | 76.97 | 89.23 | 76.24 | 84.75 | 78.01 |
+| O3 | 75.88 | 77.96 | 86.68 | 75.03 | 72.82 | 74.45 | 83.90 | 70.01 | 79.82 | 74.36 |
+| O4 | 82.89 | 80.38 | 91.23 | 80.35 | 76.61 | 75.47 | 89.78 | 75.39 | 85.13 | 77.90 |
+| O5 | 85.78 | 80.55 | 90.69 | 80.43 | 78.24 | 80.09 | 89.20 | 76.28 | 85.98 | 79.34 |
+| O6 | 87.55 | 77.49 | 90.69 | 70.73 | 86.28 | 79.07 | 90.88 | 74.12 | 88.85 | 75.35 |
+| O7 | 81.99 | 75.76 | 85.02 | 70.20 | 80.14 | 78.29 | 83.46 | 65.53 | 82.65 | 72.45 |
+| O8 | 84.52 | 60.41 | 84.27 | 55.62 | 81.43 | 56.08 | 83.99 | 67.51 | 83.55 | 59.91 |
+| O9 | 61.32 | 53.24 | 92.79 | 80.54 | 68.49 | 74.15 | 90.16 | 83.55 | 78.19 | 72.87 |
+| O10 | 42.51 | 40.52 | 92.16 | 78.03 | 62.31 | 61.18 | 91.17 | 76.84 | 72.04 | 64.14 |
+| O11 | 59.89 | 42.45 | 90.75 | 74.85 | 60.99 | 58.67 | 89.90 | 79.34 | 75.38 | 63.83 |
+| O12 | 83.41 | 74.61 | 74.93 | 59.19 | 36.72 | 33.62 | 88.78 | 67.67 | 70.96 | 58.77 |
+| O13 | 42.29 | 38.76 | 75.50 | 59.88 | 42.60 | 46.20 | 88.83 | 67.68 | 62.30 | 53.13 |
+| O14 |  |  |  |  | 35.96 | 34.24 |  |  | – | – |
+| O15 |  |  |  |  | 40.90 | 45.66 |  |  | – | – |
+| O16 | 80.11 | 65.26 | 75.83 | 63.46 | 43.47 | 46.77 | 88.97 | 64.22 | 72.09 | 59.93 |
+| O17 | 77.68 | 73.93 | 75.00 | 45.40 | 65.43 | 69.44 | 84.33 | 65.24 | 75.61 | 63.50 |
+| O18 | 62.39 | 46.69 | 56.63 | 38.60 | 38.60 | 40.03 | 82.49 | 63.92 | 60.03 | 47.31 |
+| O19 | 85.08 | 77.43 | 73.77 | 56.78 | 60.54 | 60.61 | 88.60 | 64.10 | 77.00 | 64.73 |
+| O20 | 85.34 | 76.11 | 74.69 | 62.08 | 68.17 | 68.60 | 88.70 | 60.77 | 79.22 | 66.89 |
+
+**Setup and source**
+
+| # | Places crop → predicts crop → target | Run |
+|---|---|---|
+| O1 | D3-full → R34 crop-CNN → R34 | [seed 0](results/redifm_dinov3_nnunet_crop/odoc_all_regions_seed0.json) |
+| O2 | D3-full → R34 crop-CNN → R34 | [81.45](results/redifm_dinov3_nnunet_crop/odoc_final_seed0.json) · [81.27](results/redifm_dinov3_nnunet_crop/odoc_final_seed1.json) · [81.41](results/redifm_dinov3_nnunet_crop/odoc_final_seed2.json) |
+| O3 | D3-full → R34 crop-CNN → R34 | [seed 0](results/redifm_dinov3_nnunet_crop/odoc_resunet34_seed0.json) |
+| O4 | D3-full → R34 crop-CNN → R34 | [seed 0](results/redifm_dinov3_nnunet_crop/odoc_order_DBCE_seed0.json) |
+| O5 | D3-full → R34 crop-CNN (sharp) → R34 | [seed 0](results/sharp_crop/adapt_all_seed0.json) |
+| O6 | nnU\* source → D3-crop → nnU\* | [seed 0](results/redifm_dinov3_nnunet/all_domains_seed0.json) |
+| O7 | R34 source → D3-crop → R34 | [77.57](results/redifm_dinov3/final_all_domains_seed0.json) · [77.42](results/redifm_dinov3/final_all_domains_seed1.json) · [77.65](results/redifm_dinov3/final_all_domains_seed2.json) |
+| O8 | R34 source → SAM ViT-H → R34 | [seed 42](results/redifm_sam/redifm_sam_domain_A.json) |
+| O9 | D3-full source → D3-crop → D3-full head | [seed 0](results/redifm_dinov3_dual/all_domains_seed0.json) |
+| O10 | D3-full + D3-crop | [json](results/dinov3_dual/dinov3_dual_domain_A.json) |
+| O11 | D3-full | [json](results/dinov3_single/dinov3_single_domain_A.json) |
+| O12 | D3-full → R34 crop-CNN | [json](results/dinov3_crop/all_regions_odoc.json) |
+| O13 | D3-full → R34 crop-CNN | [json](results/dinov3_crop/dinov3_crop_domain_A.json) |
+| O14 | D3-full → R34 crop-CNN, sharp pixels at test only | [json](results/dinov3_crop/original_pixels_D_all.json) |
+| O15 | D3-full → R34 crop-CNN, sharp pixels at test only | [json](results/dinov3_crop/original_pixels_D_largest.json) |
+| O16 | D3-full → R34 crop-CNN (sharp) | [json](results/sharp_crop/no_adapt_all.json) |
+| O17 | nnU\* | [json](results/source_only_nnunet/source_only_nnunet_domain_A.json) |
+| O18 | R34 | [json](results/source_only/source_only_domain_A.json) |
+| O19 | ground truth → R34 crop-CNN | [script](results/sharp_crop/crop_model_only.py) |
+| O20 | ground truth → R34 crop-CNN (sharp) | [script](results/sharp_crop/crop_model_only.py) |
+
+**Long-term, 3 passes of B→E with no reset** (O7, seed 0, [json](results/redifm_dinov3/long_term_seed0.json)): the rounds give 77.57 / 75.97 / 77.39, an average of 76.98. That's +23.31 over R34 source only, with 0.59 degradation.
+
+<details><summary>Where DINOv3 + full-image head places crops (†, <a href="results/dinov3_crop/region_accuracy.py">script</a>)</summary>
+
+| Domain | Regions / image | Some region touches the disc | A crop holds the whole disc | Region box IoU ≥ 0.5 with the disc | Regions that are on the disc | Images with a false region |
+|---|---|---|---|---|---|---|
+| B | 2.04 | 100% | 100% | 99.2% | 49.1% | 92.0% |
+| C | 1.11 | 100% | 100% | 99.8% | 90.2% | 8.2% |
+| D | 2.00 | 100% | 99.8% | 76.1% | 50.0% | 80.4% |
+| E | 1.01 | 100% | 100% | 100% | 99.0% | 1.0% |
+| All | 1.66 | 100% | 99.9% | 90.0% | 60.2% | 54.6% |
+
+High recall, low precision: no image loses its disc, but most B and D images get one extra false region.
+</details>
+
+<details><summary>Domain-B-only development runs: ReDi-FM + D3, R34 (<code>results/redifm_dinov3/</code>)</summary>
+
+| Run | Setting | B (OD / OC) |
+|---|---|---|
+| [exp01_default](results/redifm_dinov3/exp01_default.json) | training-free prototype teacher, seed 42 | 69.18 (76.68 / 61.69) |
+| [exp02_head](results/redifm_dinov3/exp02_head.json) | D3-crop head teacher, seed 42 | 78.50 (81.94 / 75.05) |
+| [exp03 seed 0](results/redifm_dinov3/exp03_head_seed0.json) · [1](results/redifm_dinov3/exp03_head_seed1.json) · [2](results/redifm_dinov3/exp03_head_seed2.json) | head, seeds 0, 1, 2 | 78.45 · 78.91 · 79.27 |
+| [exp04](results/redifm_dinov3/exp04_head_l11-17-23.json) | head on blocks 11, 17 and 23, seed 42 | 77.94 (81.51 / 74.37) |
+| [final B seed 0](results/redifm_dinov3/final_domain_B_seed0.json) · [1](results/redifm_dinov3/final_domain_B_seed1.json) · [2](results/redifm_dinov3/final_domain_B_seed2.json) | the final setting, B only | 78.45 · 78.91 · 79.27 |
+</details>
+
+### Prostate — targets B BMC · C HK · D I2CVB · E RUNMC · F UCL
+
+Paper: source only **51.02**, ReDi-FM + SAM **66.10**.
+
+**Adaptation**
+
+| # | Method | B | C | D | E | F | **Do. A** |
+|---|---|---|---|---|---|---|---|
+| P1 | Crop-teach, blurry, all | 84.26 | 84.14 | 66.61 | 75.95 | 75.14 | 77.22 |
+| P2 | Crop-teach, blurry, largest (3 seeds) | 84.03 | 84.34 | 68.82 | **79.11** | **77.94** | 78.85 ± 0.33 |
+| P3 | Crop-teach, blurry, largest, lr 1e-4 | 82.65 | 82.38 | 67.50 | 75.08 | 77.45 | 77.01 |
+| P4 | Crop-teach, first version | 74.18 | 76.07 | 61.92 | 55.39 | 43.08 | 62.13 |
+| P5 | † `crop_teach_tta.py` (standalone Crop-teach, largest) | 84.21 | **84.52** | **70.72** | 78.99 | 76.80 | **79.05** |
+| P6 | ReDi-FM + D3, nnU | 82.47 | 81.56 | 57.25 | 71.92 | 71.18 | 72.88 |
+| P7 | ReDi-FM + D3, nnU\* | 70.08 | 72.06 | 62.64 | 64.47 | 63.69 | 66.59 |
+| P8 | ReDi-FM + D3, R34 | 52.21 | 77.61 | 43.02 | 64.79 | 36.96 | 54.92 |
+| P9 | ReDi-FM, D3 only | **84.60** | 83.61 | 63.92 | 70.67 | 54.24 | 71.41 |
+
+**No adaptation**
+
+| # | Method | B | C | D | E | F | **Do. A** |
+|---|---|---|---|---|---|---|---|
+| P10 | D3 single | **82.34** | **79.98** | **60.63** | 64.84 | 47.70 | **67.10** |
+| P11 | Source only, nnU | 77.99 | 64.45 | 32.18 | **68.35** | **62.23** | 61.04 |
+| P12 | Source only, nnU\* | 58.05 | 66.94 | 23.15 | 51.86 | 39.28 | 47.86 |
+| P13 | Source only, R34 | 19.07 | 72.54 | 9.60 | 23.47 | 7.75 | 26.49 |
+
+**Setup and source**
+
+| # | Places crop → predicts crop → target | Run |
+|---|---|---|
+| P1 | D3-full → nnU crop-CNN → nnU | [seed 0](results/redifm_dinov3_nnunet_crop/prostate_all_regions_seed0.json) |
+| P2 | D3-full → nnU crop-CNN → nnU | [79.13](results/redifm_dinov3_nnunet_crop/prostate_final_seed0.json) · [79.02](results/redifm_dinov3_nnunet_crop/prostate_final_seed1.json) · [78.39](results/redifm_dinov3_nnunet_crop/prostate_final_seed2.json) |
+| P3 | D3-full → nnU crop-CNN → nnU | [seed 0](results/redifm_dinov3_nnunet_crop/prostate_crop_trained_seed0.json) |
+| P4 | D3-full → nnU (whole-image, not crop-trained) → D3-full head; lr 1e-4 | [seed 0](results/redifm_dinov3_nnunet_crop/prostate_all_domains_seed0.json) |
+| P5 | D3-full → nnU crop-CNN → nnU | [scores](results/crop_teach_tta/prostate_check/scores.json) |
+| P6 | nnU source → D3-crop → nnU | [seed 0](results/redifm_dinov3_nnunet_official/prostate_all_domains_seed0.json) |
+| P7 | nnU\* source → D3-crop → nnU\* | [seed 0](results/redifm_dinov3_nnunet/prostate_all_domains_seed0.json) |
+| P8 | R34 source → D3-crop → R34 | [seed 0](results/redifm_dinov3/prostate_all_domains_seed0.json) |
+| P9 | D3-full source → D3-crop → D3-full head | [seed 0](results/redifm_dinov3_dual/prostate_all_domains_seed0.json) |
+| P10 | D3-full | [json](results/dinov3_single/prostate_dinov3_single_domain_A.json) |
+| P11 | nnU | [json](results/source_only_nnunet_official/prostate_source_only_nnunet_official_domain_A.json) |
+| P12 | nnU\* | [json](results/source_only_nnunet/prostate_source_only_nnunet_domain_A.json) |
+| P13 | R34 | [json](results/source_only/prostate_source_only_domain_A.json) |
+
+**Long-term, 3 passes of B→F** (Crop-teach, blurry, largest, lr 1e-4, seed 0, [json](results/redifm_dinov3_nnunet_crop/prostate_long_term_seed0.json)): the rounds give 77.01 / 78.70 / 78.77, an average of 78.16.
+
+Prostate slices are 384×384 in the public release, so prostate has no sharp-crop variant.
+
+<details><summary>DINOv3 detector head as crop placer: box accuracy only, no DSC (†, <a href="results/detect_crop_tta/box_accuracy.py">script</a>)</summary>
+
+CenterNet-style head on D3, trained 40 epochs on domain A. It predicts about 1 box per image, so "all boxes" and "best box" are the same. P/R = precision / recall of boxes matched to the ground truth at the given IoU.
+
+| Domain | Boxes / image | P / R @ IoU 0.5 | P / R @ IoU 0.3 | Crop holds the whole prostate: detector vs D3-full mask |
 |---|---|---|---|---|
-| Source only, ResUNet-34 | 72.12 | **60.99** | 80.08 | 71.06 |
-| `crop_teach_tta.py`, ResUNet-34 | 76.69 | 58.26 | 81.04 | 72.00 |
-| DINOv3 places the crop, crop ResUNet-34 predicts, no adaptation (`dinov3_crop`) | 80.68 | 79.82 | 84.02 | 81.50 |
-| **The same, refining every DINOv3 region** (`dinov3_crop --crop-region all`) | **80.94** | **79.89** | **84.55** | **81.79** |
+| B | 1.02 | 86.5 / 86.7 | 96.7 / 96.6 | 99.7% vs 96.6% |
+| C | 1.00 | 83.5 / 83.5 | 93.7 / 93.7 | 98.1% vs 100% |
+| D | 1.04 | 63.9 / 64.7 | 79.8 / 80.1 | 83.1% vs 86.8% |
+| E | 1.01 | 71.5 / 71.5 | 80.0 / 79.8 | 87.2% vs 87.6% |
+| F | 1.01 | 54.0 / 54.3 | 67.6 / 68.0 | 81.1% vs 74.9% |
+| All | 1.02 | 72.1 / 72.5 | 83.9 / 84.0 | 89.4% vs 89.4% |
+</details>
 
-## Reproducing the results
+### Polyp — targets B CVC-ClinicDB · C ETIS-Larib · D Kvasir-SEG (domain A: BKAI-IGH NeoPolyp)
 
-One script reproduces everything, from a fresh clone, locally or in a Kaggle notebook:
+Paper (ReDi-FM + SAM, Segformer-B0 target): **77.47**. Polyp's nnU uses 5 poolings at 352 px; nnU-Net itself would pad to 384 and use 6 (`NnUNet2D` in `src/common/models.py`).
+
+**Adaptation**
+
+| # | Method | B | C | D | **Do. A** |
+|---|---|---|---|---|---|
+| Y1 | Crop-teach, blurry, all, R34 | 77.65 | 57.63 | 80.85 | 72.04 |
+| Y2 | Crop-teach, sharp, all, nnU | **82.22** | **73.96** | **85.07** | **80.42** |
+| Y3 | † `crop_teach_tta.py` (standalone Crop-teach, largest), R34 | 76.69 | 58.26 | 81.04 | 72.00 |
+
+**No adaptation**
+
+| # | Method | B | C | D | **Do. A** |
+|---|---|---|---|---|---|
+| Y4 | `dinov3_crop`, blurry, all | **80.94** | **79.89** | **84.55** | **81.79** |
+| Y5 | `dinov3_crop`, blurry, largest | 80.68 | 79.82 | 84.02 | 81.50 |
+| Y6 | Source only, nnU | 73.90 | 73.18 | 81.14 | 76.07 |
+| Y7 | Source only, R34 | 72.12 | 60.99 | 80.08 | 71.06 |
+
+**Check: the crop-CNN alone, crops placed from the ground truth (2× each polyp)**
+
+| # | Method | B | C | D | **Mean** |
+|---|---|---|---|---|---|
+| Y8 | † Sharp nnU crop-CNN | 81.64 | 83.15 | 85.50 | 83.43 |
+
+**Setup and source**
+
+| # | Places crop → predicts crop → target | Run |
+|---|---|---|
+| Y1 | D3-full → R34 crop-CNN → R34 | [seed 0](results/redifm_dinov3_nnunet_crop/polyp_all_regions_seed0.json) |
+| Y2 | D3-full → nnU crop-CNN (sharp) → nnU | [seed 0](results/polyp_nnunet_sharp/adapt_all_seed0.json) |
+| Y3 | D3-full → R34 crop-CNN → R34 | [scores](results/crop_teach_tta/polyp/scores.json) |
+| Y4 | D3-full → R34 crop-CNN | [json](results/dinov3_crop/all_regions_polyp.json) |
+| Y5 | D3-full → R34 crop-CNN | [json](results/dinov3_crop/polyp_dinov3_crop_domain_A.json) |
+| Y6 | nnU | [json](results/polyp_nnunet_sharp/source_only_nnunet.json) |
+| Y7 | R34 | [json](results/source_only/polyp_source_only_domain_A.json) |
+| Y8 | ground truth → nnU crop-CNN (sharp) | [log](results/polyp_nnunet_sharp/crop_vs_full.log) |
+
+### Loss search (dev / held-out split)
+
+<details><summary>All loss variants (<code>extras/loss_search/</code>, cached supervision, seed 0)</summary>
+
+The teachers' outputs were cached once (crop placement and pseudo ground truth fixed). Each variant then re-ran only the target model's updates. `pg_distill_bn_lr2e5` is the loss Crop-teach uses. A dash means the variant was not run on that problem.
+
+| Loss | prostate dev | OD/OC dev | mean dev | prostate held-out | OD/OC held-out | prostate all | OD/OC all |
+|---|---|---|---|---|---|---|---|
+| **pg_distill_bn_lr2e5** | 79.39 | 81.94 | **80.67** | 78.93 | 81.43 | 79.01 | 81.69 |
+| agree_lr2e5 | 79.47 | 81.36 | 80.41 | 79.13 | 81.22 | 79.10 | 81.29 |
+| agree_lr4e5 | 79.17 | 81.49 | 80.33 | 78.91 | 81.53 | 78.86 | 81.51 |
+| pg_bn_lr2e5 | 79.23 | 81.90 | 80.56 | 78.29 | 81.43 | 78.70 | 81.67 |
+| pgd_double_bn_lr2e5 | 79.39 | 81.64 | 80.52 | 78.47 | 81.31 | 78.86 | 81.48 |
+| pgd_confident_bn_lr2e5 | 79.45 | 81.57 | 80.51 | 79.15 | 81.32 | 79.17 | 81.45 |
+| pg_half_bn_lr2e5 | 79.38 | 81.51 | 80.44 | 78.82 | 80.90 | 78.92 | 81.21 |
+| pgd_half_bn_lr2e5 | 79.09 | 81.75 | 80.42 | 78.72 | 81.34 | 78.69 | 81.55 |
+| pgs_bn_lr1e5 | 79.68 | 81.07 | 80.37 | 78.50 | 80.71 | 79.02 | 80.89 |
+| pgs_bn_lr2e5 | 79.32 | 81.29 | 80.31 | 78.99 | 81.06 | 79.01 | 81.18 |
+| pgs_agree_bn_lr2e5 | 79.07 | 80.67 | 79.87 | 79.71 | 80.09 | 79.18 | 80.39 |
+| fused_bn_lr2e5 | 78.96 | 80.50 | 79.73 | 79.17 | 80.13 | 78.88 | 80.33 |
+| pgs_bn_lr5e6 | 78.79 | 80.50 | 79.64 | 77.84 | 80.10 | 78.30 | 80.30 |
+| pgs_bn_lr5e5 | 78.06 | 81.11 | 79.58 | 78.77 | 80.80 | 78.18 | 80.96 |
+| fused_bn_lr5e5 | 77.74 | 80.71 | 79.23 | 78.51 | 80.26 | 77.91 | 80.49 |
+| baseline | 76.56 | 78.16 | 77.36 | 77.25 | 77.83 | 76.88 | 77.99 |
+| pixel_fused | 76.91 | 76.93 | 76.92 | 77.33 | 77.22 | 77.05 | 77.07 |
+| pixel_agree_both | 77.11 | 76.40 | 76.76 | 76.23 | 76.12 | 76.70 | 76.26 |
+| crop_hard | 75.39 | 75.95 | 75.67 | 75.65 | 75.97 | 75.45 | 75.95 |
+| fused_soft | 75.21 | 75.74 | 75.47 | 77.32 | 75.17 | 76.10 | 75.45 |
+| crop_soft | 75.77 | 73.41 | 74.59 | 77.15 | 73.60 | 76.23 | 73.49 |
+| distill_only_bn_lr2e5 | 74.42 | 63.00 | 68.71 | 73.40 | 63.24 | 73.92 | 63.12 |
+| pgs_bn | – | 80.52 | – | – | 79.94 | – | 80.24 |
+| per_gate_soft | – | 78.80 | – | – | 78.49 | – | 78.64 |
+| baseline_frozen_bn | – | 78.79 | – | – | 78.76 | – | 78.77 |
+| fused_lr5e5 | 77.74 | – | – | 78.51 | – | 77.91 | – |
+| fused_agree | 77.03 | – | – | 76.50 | – | 76.76 | – |
+| agree_both_half | 76.53 | – | – | 76.53 | – | 76.63 | – |
+| fused_distill | 76.51 | – | – | 76.73 | – | 76.56 | – |
+| agree_both_gate | 76.11 | – | – | 76.68 | – | 76.35 | – |
+| fused_nogate | 75.90 | – | – | 77.02 | – | 76.52 | – |
+| pixel_agree | 75.89 | – | – | 74.74 | – | 75.35 | – |
+| crop_distill | 75.70 | – | – | 76.32 | – | 75.80 | – |
+| agree_both_zero | 75.35 | – | – | 76.92 | – | 76.04 | – |
+| image_gate | 75.18 | – | – | 76.30 | – | 75.64 | – |
+| crop_hard_plain | 74.64 | – | – | 75.50 | – | 75.08 | – |
+| agree_both_soft | 73.34 | – | – | 75.98 | – | 74.30 | – |
+| fused_lr3e4 | 72.06 | – | – | 73.10 | – | 72.40 | – |
+
+Three polyp variants were also run ([agree_lr2e5](results/loss_search/polyp_agree_lr2e5_seed0_r1.json), [agree_lr4e5](results/loss_search/polyp_agree_lr4e5_seed0_r1.json), [pg_distill_bn_lr2e5](results/loss_search/polyp_pg_distill_bn_lr2e5_seed0_r1.json)):
+
+| Loss | B | C | D | all | dev | held-out |
+|---|---|---|---|---|---|---|
+| agree_lr2e5 | 78.60 | 55.55 | 80.98 | 71.71 | 71.06 | 72.35 |
+| pg_distill_bn_lr2e5 | 77.35 | 54.15 | 80.70 | 70.73 | 70.93 | 70.53 |
+| agree_lr4e5 | 75.28 | 54.49 | 80.03 | 69.93 | 69.65 | 70.21 |
+</details>
+
+## Methods
+
+| `--method` | File | What it does |
+|---|---|---|
+| `detect_crop_tta` | `src/methods/detect_crop_tta.py` | Crop-teach with a D3 detector placing the crops (prostate; not evaluated) |
+| `dinov3_crop` | `src/baselines/dinov3_crop.py` | D3-full places crops, a crop-CNN predicts them. `--crop-region`, `--crop-from` |
+| `dinov3_dual` | `src/baselines/dinov3_dual.py` | D3-full and D3-crop fused with Eq. 16 |
+| `dinov3_single` | `src/baselines/dinov3_single.py` | D3-full on the whole image |
+| `redifm_dinov3` | `src/methods/redifm_dinov3.py` | ReDi-FM with D3-crop in SAM's place. `--arch` picks the source/target CNN |
+| `redifm_dinov3_dual` | `src/methods/redifm_dinov3_dual.py` | ReDi-FM with D3 only: the D3-full head is source and target |
+| `redifm_dinov3_nnunet_crop` | `src/methods/redifm_dinov3_nnunet_crop.py` | Crop-teach. `--cnn`, `--crop-region`, `--crop-from`, `--no-augmentation` |
+| `redifm_sam` | `src/methods/redifm_sam.py` | The paper's ReDi-FM, with frozen SAM ViT-H |
+| `source_only` | `src/baselines/source_only.py` | Domain-A model, no updates. `--arch resunet34 / nnunet / nnunet_official` |
+
+`crop_teach_tta.py` (repository root) is Crop-teach as one independent file, with no training: pass three models and a data folder.
+
+<details><summary>The ReDi-FM protocol and loss in detail</summary>
+
+**Setting.** A model trained on labeled domain A adapts online to the unlabeled target stream, one image at a time (batch size 1). Each image gets one optimizer step and is then predicted, and that prediction is scored. There's no reset between domains. OD/OC scores OD as prediction ≥ 1 against ground truth ≥ 1, and OC as prediction = 2 against ground truth = 2.
+
+**Samples.** Images are resized (512 OD/OC, 384 prostate, 352 polyp) and min-max normalized per image. The frozen source gives nested structure probabilities, $P^{OD} = p_{rim} + p_{cup}$ and $P^{OC} = p_{cup}$, with source mask $M_s = P_s > 0.5$. The foundation teacher gives $P_{fm}$ and $M_{fm}$. The student sees an augmented view: ColorJitter (0.2, 0.2, 0.2, 0.05), then RandomErasing (p = 0.5, area 2–20%).
+
+**ReDi-FM loss (Eqs. 6–16).**
+- **Confidence weight:** $\Phi(P) = 1.3 - \mathcal{N}(P; 0.5, 0.1)$. It is about 0.04 at P = 0.5 and about 0.94 at P = 0 or 1.
+- **Hard loss:** $L_{hard}(M, \Phi) = \overline{\Phi \cdot \mathrm{BCE}(P_t, M)} + 1 - \frac{1}{K}\sum_k \frac{2\sum \Phi P_t M}{\sum \Phi P_t + \sum \Phi M}$.
+- **Consensus:** $r$ = the mean Dice of $M_s$ and $M_{fm}$ over structures.
+- **Soft loss:** a hard class-balanced soft loss with entropy threshold 0.5, annealed by $r$.
+- **Total:** $L = L_{hard}(M_{fm}, \Phi_{fm}) + r\, L_{hard}(M_s, \Phi_s) + L_{soft}$, with Adam at lr 1e-4.
+
+**DINOv3 as the foundation teacher.**
+- **The crop:** the largest source region, 2× its extent, at least 96 px.
+- **The teacher:** the crop is resized to 512 and encoded by D3; a small convolutional head trained on domain-A crops predicts the classes.
+- **Pasting back:** the prediction goes back into the image, with background outside the crop.
+
+**Crop-teach loss** (`teacher_loss`, found with `extras/loss_search/`), summed over structures $k$:
+
+$L = L_{hard}(M_{crop}, \Phi_{crop}) + \sum_k a_k\, L_{hard}(M^k_{D3}, \Phi^k_{D3}) - \overline{\sum_c q_c \log p_{t,c}}$
+
+- $a_k$ is the Dice agreement of the two teachers on structure $k$.
+- $q$ fuses the teachers per pixel: $(\Phi_c P_c + r\,\Phi_s P_s)/(\Phi_c + r\,\Phi_s)$.
+- Updates use Adam at lr 2e-5, with BatchNorm statistics frozen.
+</details>
+
+## Reproducing
 
 ```bash
 ./reproduce.sh                  # setup → assets → odoc → prostate → long_term
-./reproduce.sh odoc             # or only some stages
+./reproduce.sh odoc             # or only some stages (also: polyp)
 ```
 
 | Stage | What it does |
 |---|---|
-| `setup` | install `requirements.txt` (PyTorch itself is preinstalled on Kaggle; install it first locally) |
-| `assets` | `src/download/download.py`: public foundation models (DINOv3, SAM ViT-H) from their official sources, and the data and this project's checkpoints from the public asset bundle |
-| `odoc` | every row of the OD/OC table |
-| `prostate` | every row of the prostate table |
-| `long_term` | the 3-round forgetting check |
-| `polyp` | polyp benchmark with `crop_teach_tta.py` and ResUNet-34; only when named, not in the default run. The paper uses Segformer-B0, so these scores are not comparable with its Table 2 |
+| `setup` | Install `requirements.txt`. PyTorch is preinstalled on Kaggle; install it first locally |
+| `assets` | `src/download/download.py`: DINOv3 and SAM from their official sources; data and checkpoints from the public bundle [`wiedergeburt/redifm-assets`](https://www.kaggle.com/datasets/wiedergeburt/redifm-assets) |
+| `odoc`, `prostate`, `polyp` | The evaluations of each problem. A checkpoint missing from the bundle is trained on domain A first |
+| `long_term` | The 3-round forgetting check |
 
-A checkpoint that the bundle lacks (a source model or a DINOv3 head) is trained on domain A before it is first used, with the recipe that produced it. `SEEDS`, `PYTHON` and the other settings are listed at the top of `reproduce.sh`.
+Results from the latest experiments are not in `reproduce.sh` yet:
+- sharp crops (`--crop-from original`);
+- all regions;
+- polyp nnU.
 
-### On Kaggle
+Their JSON `config` has the exact options to rerun them with `src/evaluate.py`.
 
-1. In a new notebook, turn on a GPU and Internet, then use **Add Input** to attach the public dataset `wiedergeburt/redifm-assets`.
-2. Run:
-   ```bash
-   !git clone https://github.com/lqtrng/my-ctta-method.git /kaggle/working/ReDi-FM
-   !cd /kaggle/working/ReDi-FM && ./reproduce.sh
-   ```
-   The attached dataset is linked from `/kaggle/input`, not copied. Results (`results/`) and the MLflow store (`mlruns/`) are written under `/kaggle/working`, so they are kept with the notebook's output. A Kaggle session is limited in time, so you can run one stage per session (`./reproduce.sh setup assets odoc`, then `./reproduce.sh setup assets prostate`, …).
-
-### Locally
-
-The same commands work. `download.py` downloads the asset bundle once into `.cache/` over HTTPS. The dataset is public, so no Kaggle account or API key is needed. Files that are already in place are never fetched again.
-
-### The asset bundle
-
-The OD/OC datasets, the prepared prostate slices and polyp images and this project's checkpoints have no single public download. They are published as the public Kaggle dataset [`wiedergeburt/redifm-assets`](https://www.kaggle.com/datasets/wiedergeburt/redifm-assets), holding only the files the code reads (about 4.7 GB). To publish a new version:
+- **Kaggle:** turn on GPU and Internet, attach `wiedergeburt/redifm-assets`, then run `git clone https://github.com/lqtrng/my-ctta-method.git /kaggle/working/ReDi-FM && cd /kaggle/working/ReDi-FM && ./reproduce.sh`. Run one stage per session if time runs out.
+- **Bundle:** to publish a new version, run `python src/download/bundle.py build`, then `kaggle datasets version -p .cache/kaggle-bundle --dir-mode zip -m "..."`.
+- **MLflow:** every run is logged to `mlruns/`. Browse it with `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db`. `REDIFM_MLFLOW=0` turns tracking off.
+- **Files:** data lives in `data/`. Weights live in `/run/media/lqtrung/1tb-ssd/Model` when it exists, otherwise in `checkpoints/`; `REDIFM_MODEL_DIR` overrides that. This project's checkpoints are in its `ReDi-FM/` subfolder. Methods read only the paths in `src/common/paths.py` and never download.
 
 ```bash
-python src/download/bundle.py build                                   # stage into .cache/kaggle-bundle
-kaggle datasets create -p .cache/kaggle-bundle --dir-mode zip         # first upload
-kaggle datasets version -p .cache/kaggle-bundle --dir-mode zip -m "new checkpoints"   # later
+python src/evaluate.py --method redifm_dinov3_nnunet_crop --task odoc --crop-from original \
+    --foundation-checkpoint "$(python src/common/paths.py RESUNET_SHARP_CROP_CHECKPOINT)" --seed 0
+python src/evaluate.py --method source_only --task prostate --arch nnunet_official
+python src/evaluate.py --method redifm_dinov3 --rounds 3          # long-term CTTA
+python src/evaluate.py --method <name> --help                     # every option of a method
 ```
 
-The images remain under the original datasets' terms of use (listed in the dataset description). `REDIFM_KAGGLE_DATASET` selects another dataset id.
-
-## Experiment tracking (MLflow)
-
-Every entry point logs one MLflow run to `mlruns/`, in the experiment `redifm-odoc` or `redifm-prostate` (`src/common/tracking.py`):
-
-- **Parameters:** every command-line option.
-- **Tags:** method, task, seed, git commit, and whether the tree had uncommitted changes.
-- **Metrics:** Do. A and every per-domain number (`B/disc_dsc`, `C/mean_dsc`, …). Each per-image number (DSC, consensus *r*, teacher agreement) is also logged as a curve along the target stream (`stream/...`), so drift and forgetting are visible. Training scripts log the loss per epoch.
-- **Artifacts:** the result JSON, which is still written to `results/` as before.
-
-```bash
-mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db      # then open http://127.0.0.1:5000
-```
-
-Runs with `--max-images` are tagged `smoke_test=True`. Set `REDIFM_MLFLOW=0` to turn tracking off, or `MLFLOW_TRACKING_URI` to log to another server.
-
-## Repository layout
-
-`src/` is grouped by role. All commands run from the repository root.
+## Layout
 
 ```
-src/
-  evaluate.py  the one evaluation script: streams the target domains, scores every method
-               the same way (per-image DSC, domain means, Do. A, long-term rounds), writes
-               results/<method>/ and logs to MLflow
-  common/      shared code: paths, data streams, tasks and their scoring, networks, DINOv3
-               backbone and head, ReDi-FM prompts and losses, MLflow tracking, seed report
-  download/    the only code that uses the network: fetch data, weights and checkpoints,
-               prepare the prostate and polyp benchmarks, build the Kaggle asset bundle
-  training/    train_source.py        ResUNet-34 or nnU-Net source model on domain A
-               train_dinov3_head.py   DINOv3 decoder head on domain A (--full-image for the single/dual baselines)
-               train_nnunet.py        prostate nnU-Net with nnU-Net v2's own defaults (--arch nnunet_official; --crop: on enlarged crops)
-  baselines/   source_only.py         no adaptation (--arch nnunet, prostate: nnunet_official: the "nnU-Net only" row)
-               dinov3_single.py       one frozen DINOv3 with a full-image head, no ResUNet, no adaptation
-               dinov3_dual.py         full-image DINOv3 + DINOv3 crop teacher fused with Eq. 16, no adaptation
-  methods/     redifm_sam.py          ReDi-FM with frozen SAM ViT-H (the paper's method)
-               redifm_dinov3.py       ReDi-FM with frozen DINOv3 ViT-L/16 (--arch nnunet, prostate: nnunet_official: nnU-Net source/target)
-               redifm_dinov3_dual.py  ReDi-FM with DINOv3 only: full-image head as source/target, crop head as foundation model
-               redifm_dinov3_nnunet_crop.py  frozen DINOv3 places the crop, frozen crop nnU-Net makes the pseudo ground truth, target nnU-Net adapts
-crop_teach_tta.py  the new method as one independent file, no training: pass three models and a data folder
-extras/        not part of reproduce.sh: zero-shot MedCLIP-SAMv2, DINOv3 teacher diagnostics, figure scripts
+src/evaluate.py   the one evaluation script: streams the target domains, scores every method
+                  the same way, writes results/<method>/ and logs to MLflow
+src/common/       paths, data streams, tasks and scoring, networks, DINOv3 heads, losses, tracking
+src/download/     the only code that uses the network: data, weights, prostate/polyp preparation, bundle
+src/training/     train_source.py (R34 / nnU*), train_nnunet.py (nnU; --crop, --crop-from),
+                  train_dinov3_head.py (D3 heads), train_dinov3_detector.py
+src/baselines/    no-adaptation methods        src/methods/   adaptation methods
+crop_teach_tta.py Crop-teach as one file     extras/        loss search, MedCLIP-SAMv2, figures
+demo_dinov3_prostate/, demo_adaptation_D/      local viewers of predictions and adaptation steps
 ```
-
-Every file in `baselines/` and `methods/` is a black box for `evaluate.py`: `build(args, task)` returns a segmenter that maps one target image to a class map (a CTTA method updates itself inside that call). The results folder and MLflow run are named `<method>[_<arch>]`, e.g. `results/source_only_nnunet/`.
-
-```bash
-python src/download/download.py --check                                   # what is present, what is missing
-python src/evaluate.py --method source_only --task prostate
-python src/evaluate.py --method redifm_sam --domains B C D E
-python src/evaluate.py --method redifm_dinov3 --domains B --seed 0        # one domain, one seed
-python src/evaluate.py --method redifm_dinov3 --rounds 3                  # long-term CTTA (Table 3)
-python src/evaluate.py --method redifm_dinov3 --help                      # every option of a method
-python src/common/report.py results/redifm_dinov3/final_all_domains_seed*.json   # mean over seeds
-```
-
-Methods load files only from the local paths in `src/common/paths.py` and never download.
-
-**Where files live.** Data is in `data/`. Weights live in the model folder: `/run/media/lqtrung/1tb-ssd/Model` when it exists, otherwise `checkpoints/`; set `REDIFM_MODEL_DIR` to override. Shared foundation models (DINOv3, the BiomedCLIP config) sit at the top level of the model folder. This project's checkpoints (source models, SAM ViT-H, the fine-tuned BiomedCLIP, the DINOv3 decoder heads) sit in its `ReDi-FM/` subfolder. On Kaggle the bundle's files are symlinks into `/kaggle/input`.
-
-**Prostate dataset.** The six-site prostate MRI benchmark of `0140.pdf` (Section 4.1) is in the asset bundle, already prepared. `download.py prostate-public` fetches the public release instead, and `src/download/prepare_prostate.py` lays it out. It lives in `data/prostate-6/domain_{A..F}_{BIDMC,BMC,HK,I2CVB,RUNMC,UCL}/{Images,Masks}`, with the same folder pattern as the OD/OC domains. Each domain holds the T2 slices that contain prostate, at 384×384: 261 / 384 / 158 / 468 / 421 / 175 slices, matching the paper. Masks are class-index PNGs (0 = background, 1 = prostate). `common.data.build_prostate_domains` loads them.
