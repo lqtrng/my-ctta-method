@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prostate Model Viewer</title>
+<style>
+  :root {
+    --bg: #f6f7f8;
+    --panel: #ffffff;
+    --text: #1c2126;
+    --muted: #5e6873;
+    --line: #d9dee3;
+    --accent: #1f6fd1;
+    --error: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --panel: #1d2125;
+      --text: #e8eaed;
+      --muted: #9aa4ae;
+      --line: #343a40;
+      --accent: #6aa9f4;
+      --error: #f2857d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1800px; margin: 0 auto; padding: 20px 16px 32px; }
+  h1 { font-size: 22px; margin: 0 0 14px; }
+  .controls {
+    display: grid;
+    grid-template-columns: minmax(170px, 220px) minmax(180px, 280px) minmax(200px, 1fr) auto;
+    gap: 14px;
+    align-items: end;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 14px;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); }
+  select, input[type="range"] { display: block; width: 100%; margin-top: 5px; }
+  select, button {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 7px 9px;
+  }
+  input[type="range"] { accent-color: var(--accent); height: 34px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .buttons { display: flex; gap: 6px; }
+  .panels { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  figcaption { padding: 8px 11px; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
+  figcaption small { color: var(--muted); font-weight: 400; font-size: 12px; }
+  canvas { display: block; width: 100%; aspect-ratio: 1; background: #000; }
+  .notice { color: var(--muted); font-size: 14px; margin: 12px 2px 0; }
+  .error { color: var(--error); font-weight: 600; margin: 0 2px 14px; }
+  .busy .panels { opacity: 0.6; }
+  @media (max-width: 1100px) {
+    .controls { grid-template-columns: 1fr 1fr; }
+    .panels { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (max-width: 640px) {
+    .controls { grid-template-columns: 1fr; }
+    .panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<main id="app">
+  <h1>Prostate MRI: three models side by side</h1>
+
+  <section class="controls" aria-label="Choose an image">
+    <label>Domain <select id="domain"></select></label>
+    <label>Image <select id="image"></select></label>
+    <label>Position in domain <span id="position"></span>
+      <input id="slider" type="range" min="0" value="0">
+    </label>
+    <div class="buttons">
+      <button id="previous" title="Left arrow">Previous</button>
+      <button id="next" title="Right arrow">Next</button>
+      <button id="random">Random</button>
+    </div>
+  </section>
+
+  <p class="error" id="error" hidden></p>
+
+  <section class="panels">
+    <figure><figcaption>MRI slice</figcaption><canvas id="view-image"></canvas></figure>
+    <figure><figcaption>Ground truth</figcaption><canvas id="view-ground_truth"></canvas></figure>
+    <figure><figcaption>DINOv3 only <small id="empty-dinov3"></small></figcaption><canvas id="view-dinov3"></canvas></figure>
+    <figure><figcaption>nnU-Net only <small id="empty-nnunet"></small></figcaption><canvas id="view-nnunet"></canvas></figure>
+    <figure><figcaption>nnU-Net + DINOv3 <small id="empty-combined"></small></figcaption><canvas id="view-combined"></canvas></figure>
+  </section>
+  <p class="notice" id="notice"></p>
+</main>
+
+<script>
+const OVERLAYS = { ground_truth: [34, 197, 94], dinov3: [239, 68, 68], nnunet: [239, 68, 68], combined: [239, 68, 68] };
+const ALPHA = 0.55;
+const $ = (id) => document.getElementById(id);
+let catalog = null;
+let request = null;
+
+function domainEntry() {
+  return catalog.domains.find((entry) => entry.domain === $("domain").value);
+}
+
+function decode(url) {
+  const image = new Image();
+  image.src = url;
+  return image.decode().then(() => image);
+}
+
+function pixels(image, size) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0);
+  return context.getImageData(0, 0, size, size).data;
+}
+
+// Paint the slice with the mask on top; returns how many pixels the mask covers.
+function paint(name, size, base, mask, color) {
+  const canvas = $(`view-${name}`);
+  canvas.width = canvas.height = size;
+  const context = canvas.getContext("2d");
+  const output = context.createImageData(size, size);
+  output.data.set(base);
+  let covered = 0;
+  if (mask) {
+    for (let pixel = 0; pixel < size * size; pixel++) {
+      if (mask[pixel * 4] <= 127) continue;
+      covered++;
+      for (let channel = 0; channel < 3; channel++) {
+        const at = pixel * 4 + channel;
+        output.data[at] = (1 - ALPHA) * base[at] + ALPHA * color[channel];
+      }
+    }
+  }
+  context.putImageData(output, 0, 0);
+  return covered;
+}
+
+// The crop nnU-Net placed for DINOv3 + head.
+function drawCrop({ top, left, side }) {
+  const context = $("view-combined").getContext("2d");
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = 2;
+  context.setLineDash([6, 5]);
+  context.strokeRect(left + 1, top + 1, side - 2, side - 2);
+}
+
+async function segment() {
+  const entry = domainEntry();
+  const index = Number($("slider").value);
+  $("image").value = String(index);
+  $("position").textContent = `${index + 1} of ${entry.images.length}`;
+  if (request) request.abort();
+  const controller = new AbortController();
+  request = controller;
+  $("app").classList.add("busy");
+  try {
+    const url = `/api/segment?domain=${encodeURIComponent(entry.domain)}&index=${index}`;
+    const response = await fetch(url, { signal: controller.signal });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    const names = Object.keys(OVERLAYS);
+    const decoded = await Promise.all([result.image, ...names.map((name) => result[name])].map(decode));
+    if (request !== controller) return;
+    const base = pixels(decoded[0], result.size);
+    paint("image", result.size, base, null, null);
+    names.forEach((name, position) => {
+      const covered = paint(name, result.size, base, pixels(decoded[position + 1], result.size), OVERLAYS[name]);
+      const label = $(`empty-${name}`);
+      if (label) label.textContent = covered === 0 ? "nothing predicted" : "";
+    });
+    drawCrop(result.crop);
+    $("error").hidden = true;
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    $("error").textContent = `Could not segment this image: ${error.message}`;
+    $("error").hidden = false;
+  }
+  if (request === controller) $("app").classList.remove("busy");
+}
+
+function selectDomain() {
+  const entry = domainEntry();
+  $("image").replaceChildren(...entry.images.map((name, index) => new Option(name, String(index))));
+  $("slider").max = String(entry.images.length - 1);
+  $("slider").value = "0";
+  $("notice").textContent = entry.source
+    ? "Domain A: all three models were trained on these images."
+    : `Domain ${entry.domain}: none of the three models saw these images during training.`;
+  segment();
+}
+
+function move(step) {
+  const last = Number($("slider").max);
+  $("slider").value = String(Math.min(last, Math.max(0, Number($("slider").value) + step)));
+  segment();
+}
+
+async function start() {
+  try {
+    const response = await fetch("/api/catalog");
+    catalog = await response.json();
+  } catch (error) {
+    $("error").textContent = `Could not reach the server: ${error.message}. Start it with python demo_dinov3_prostate/server.py`;
+    $("error").hidden = false;
+    return;
+  }
+  $("domain").replaceChildren(...catalog.domains.map((entry) =>
+    new Option(`${entry.domain} · ${entry.dataset} (${entry.images.length})`, entry.domain)));
+  $("domain").value = catalog.domains.find((entry) => !entry.source).domain;
+  selectDomain();
+}
+
+$("domain").addEventListener("change", selectDomain);
+$("image").addEventListener("change", () => { $("slider").value = $("image").value; segment(); });
+$("slider").addEventListener("input", () => {
+  $("position").textContent = `${Number($("slider").value) + 1} of ${domainEntry().images.length}`;
+});
+$("slider").addEventListener("change", segment);
+$("previous").addEventListener("click", () => move(-1));
+$("next").addEventListener("click", () => move(1));
+$("random").addEventListener("click", () => {
+  $("slider").value = String(Math.floor(Math.random() * (Number($("slider").max) + 1)));
+  segment();
+});
+document.addEventListener("keydown", (event) => {
+  if (["SELECT", "INPUT"].includes(event.target.tagName)) return;
+  if (event.key === "ArrowLeft") move(-1);
+  if (event.key === "ArrowRight") move(1);
+});
+start();
+</script>
+</body>
+</html>

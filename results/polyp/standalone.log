@@ -1,0 +1,10 @@
+/home/lqtrung/code/python/ReDi-FM/.venv/lib/python3.12/site-packages/torch/jit/_serialization.py:176: FutureWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.
+  warnings.warn(
+/home/lqtrung/code/python/ReDi-FM/.venv/lib/python3.12/site-packages/torch/jit/_serialization.py:176: FutureWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.
+  warnings.warn(
+Target stream B -> C -> D; 1808 images on cuda
+Round 1, domain B (n=612): DSC=76.69
+Round 1, domain C (n=196): DSC=58.26
+Round 1, domain D (n=1000): DSC=81.04
+Round 1: mean DSC over domains = 72.00
+Saved predictions and scores to results/crop_teach_tta/polyp

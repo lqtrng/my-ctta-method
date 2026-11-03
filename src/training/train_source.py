@@ -27,6 +27,11 @@ in intensity, so prostate adds nnU-Net's 2D intensity augmentation (blur,
 brightness, contrast, low resolution, gamma; ``--augmentation nnunet``).  The
 three input channels repeat one grayscale slice, so every intensity transform
 treats them alike.
+
+``--crop`` trains on crops around the structure enlarged to the input size, with
+the jittered scale and center of ``train_dinov3_head.py``, for
+``methods/redifm_dinov3_nnunet_crop.py``.  ``--crop-from original`` cuts those crops
+from the full-size image instead of the resized one, so the network sees sharper pixels.
 """
 
 from __future__ import annotations
@@ -58,11 +63,12 @@ SRC_DIR = Path(__file__).resolve().parents[1]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.models import ARCHITECTURES, build_network  # noqa: E402
+from common.models import build_network  # noqa: E402
 from common.paths import CHECKPOINT_DIR, PRETRAINED_RESUNET_CHECKPOINT  # noqa: E402
 from common.protocol import seed_everything  # noqa: E402
 from common.tasks import TASKS  # noqa: E402
 from common.tracking import log_metrics, tracked_run  # noqa: E402
+from training.train_dinov3_head import enlarged_crop, enlarged_original_crop  # noqa: E402
 
 
 INITIAL_CHECKPOINT = PRETRAINED_RESUNET_CHECKPOINT
@@ -144,12 +150,21 @@ def build_augmentation(image_size: int, augmentation: str = "official") -> Compo
 
 
 class AugmentCollate:
-    def __init__(self, image_size: int, augmentation: str = "official") -> None:
+    def __init__(
+        self, image_size: int, augmentation: str = "official", crop: bool = False, crop_from: str = "resized"
+    ) -> None:
+        self.image_size = image_size
+        self.crop = crop
+        self.crop_from = crop_from
         self.transform = build_augmentation(image_size, augmentation)
 
     def __call__(
         self, batch: Sequence[tuple[np.ndarray, np.ndarray]]
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.crop and self.crop_from == "original":
+            batch = [enlarged_original_crop(image, mask, full, self.image_size) for image, mask, full in batch]
+        elif self.crop:
+            batch = [enlarged_crop(image, mask, self.image_size) for image, mask in batch]
         images, masks = zip(*batch)
         transformed = self.transform(
             data=np.stack(images, axis=0), seg=np.stack(masks, axis=0)
@@ -192,7 +207,7 @@ def default_output_path(arch: str, task: str) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", choices=list(TASKS), default="odoc")
-    parser.add_argument("--arch", choices=list(ARCHITECTURES), default="resunet34")
+    parser.add_argument("--arch", choices=list(ARCHITECTURE_NAMES), default="resunet34")
     parser.add_argument(
         "--augmentation",
         choices=AUGMENTATIONS,
@@ -203,6 +218,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=TrainConfig.workers)
     parser.add_argument("--seed", type=int, default=TrainConfig.seed)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--crop", action="store_true", help="Train on enlarged crops around the structure")
+    parser.add_argument("--crop-from", choices=("resized", "original"), default="resized",
+                        help="With --crop: cut the crops from the resized image or the full-size one")
     parser.add_argument(
         "--smoke-test",
         action="store_true",
@@ -239,7 +257,7 @@ def train(args: argparse.Namespace) -> None:
 
     seed_everything(config.seed)
     device = torch.device("cuda:0")
-    dataset = task.source_dataset()
+    dataset = task.source_dataset(original=args.crop and args.crop_from == "original")
     generator = torch.Generator().manual_seed(config.seed)
     loader = DataLoader(
         dataset,
@@ -248,9 +266,13 @@ def train(args: argparse.Namespace) -> None:
         num_workers=config.workers,
         pin_memory=True,
         drop_last=False,
-        collate_fn=AugmentCollate(config.image_size, args.augmentation),
+        collate_fn=AugmentCollate(config.image_size, args.augmentation, args.crop, args.crop_from),
         generator=generator,
         persistent_workers=config.workers > 0,
+        # Forked workers can inherit a held lock and hang forever, so start clean
+        # ones, and fail instead of waiting silently if a worker ever stalls.
+        multiprocessing_context="spawn" if config.workers > 0 else None,
+        timeout=600 if config.workers > 0 else 0,
     )
 
     model = build_network(args.arch, config.num_classes, config.image_size)
@@ -280,7 +302,8 @@ def train(args: argparse.Namespace) -> None:
     print(f"Device: {device} ({torch.cuda.get_device_name(device)})")
     print(f"Task: {task.name}, domain A ({len(dataset)} image/mask pairs)")
     print(f"Architecture: {args.arch}")
-    print(f"Augmentation: {args.augmentation}")
+    print(f"Augmentation: {args.augmentation}"
+          + (f", enlarged crops from the {args.crop_from} image" if args.crop else ""))
     if not pretrained:
         initialization = "nnU-Net He initialization"
     elif task.name == "odoc":
@@ -292,7 +315,7 @@ def train(args: argparse.Namespace) -> None:
     print(f"Configuration: {asdict(config)}")
 
     args.output = output_path
-    with tracked_run(f"train_source_{args.arch}", args):
+    with tracked_run(f"train_source_{args.arch}" + ("_crop" if args.crop else ""), args):
         model.train()
         for epoch in range(config.epochs):
             total_loss = 0.0

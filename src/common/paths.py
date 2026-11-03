@@ -29,7 +29,7 @@ RESULTS_DIR = PROJECT_DIR / "results"
 # MLFLOW_TRACKING_URI overrides it; REDIFM_MLFLOW=0 turns tracking off.
 MLFLOW_DIR = PROJECT_DIR / "mlruns"
 
-# Private Kaggle dataset with the files that have no public download: the OD/OC
+# Public Kaggle dataset with the files that have no single public download: the OD/OC
 # data, the prepared prostate and polyp data and this project's checkpoints.  It is built
 # by ``download/bundle.py`` and fetched by ``download/download.py``.
 KAGGLE_DATASET = os.environ.get("REDIFM_KAGGLE_DATASET", "wiedergeburt/redifm-assets")
@@ -47,11 +47,25 @@ MODEL_DIR = Path(
 CHECKPOINT_DIR = MODEL_DIR / "ReDi-FM"
 DEFAULT_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "domain_A_ResUNet34_last_20261017_215955.pth"
 NNUNET_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "domain_A_nnUNet2D_last_20261029_211218.pth"
+RESUNET_CROP_CHECKPOINT = CHECKPOINT_DIR / "domain_A_ResUNet34_crop.pth"
+# The same, trained on crops cut from the full-size images (--crop-from original).
+RESUNET_SHARP_CROP_CHECKPOINT = CHECKPOINT_DIR / "domain_A_ResUNet34_crop_original.pth"
 # Trained with nnU-Net intensity augmentation; the earlier prostate_domain_A_ResUNet34.pth
 # (OD/OC augmentation only) generalized poorly (26.49 Do. A against the paper's 51.02).
 PROSTATE_RESUNET_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "prostate_domain_A_ResUNet34_nnunet_aug.pth"
-PROSTATE_NNUNET_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "prostate_domain_A_nnUNet2D.pth"
+PROSTATE_NNUNET_OFFICIAL_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "prostate_domain_A_nnUNet2D_official.pth"
+PROSTATE_NNUNET_CROP_CHECKPOINT = CHECKPOINT_DIR / "prostate_domain_A_nnUNet2D_crop.pth"
+PROSTATE_DINOV3_DETECTOR_CHECKPOINT = CHECKPOINT_DIR / "prostate_dinov3_vitl16_detector_domain_A.pth"
 PROSTATE_DINOV3_HEAD_CHECKPOINT = CHECKPOINT_DIR / "prostate_dinov3_vitl16_head_domain_A.pth"
+PROSTATE_DINOV3_FULL_IMAGE_HEAD_CHECKPOINT = CHECKPOINT_DIR / "prostate_dinov3_vitl16_head_full_image_domain_A.pth"
+POLYP_RESUNET_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "polyp_domain_A_ResUNet34.pth"
+POLYP_NNUNET_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "polyp_domain_A_nnUNet2D.pth"
+POLYP_NNUNET_OFFICIAL_SOURCE_CHECKPOINT = CHECKPOINT_DIR / "polyp_domain_A_nnUNet2D_official.pth"
+POLYP_NNUNET_SHARP_CROP_CHECKPOINT = CHECKPOINT_DIR / "polyp_domain_A_nnUNet2D_crop_original.pth"
+POLYP_DINOV3_HEAD_CHECKPOINT = CHECKPOINT_DIR / "polyp_dinov3_vitl16_head_domain_A.pth"
+POLYP_DINOV3_SHARP_HEAD_CHECKPOINT = CHECKPOINT_DIR / "polyp_dinov3_vitl16_head_crop_original_domain_A.pth"
+POLYP_DINOV3_FULL_IMAGE_HEAD_CHECKPOINT = CHECKPOINT_DIR / "polyp_dinov3_vitl16_head_full_image_domain_A.pth"
+POLYP_RESUNET_CROP_CHECKPOINT = CHECKPOINT_DIR / "polyp_domain_A_ResUNet34_crop.pth"
 DINOV3_HEAD_CHECKPOINT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_domain_A.pth"
 DINOV3_FULL_IMAGE_HEAD_CHECKPOINT = CHECKPOINT_DIR / "dinov3_vitl16_odoc_head_full_image_domain_A.pth"
 # Domain-A source model of each (task, architecture).
@@ -59,7 +73,10 @@ SOURCE_CHECKPOINTS = {
     ("odoc", "resunet34"): DEFAULT_SOURCE_CHECKPOINT,
     ("odoc", "nnunet"): NNUNET_SOURCE_CHECKPOINT,
     ("prostate", "resunet34"): PROSTATE_RESUNET_SOURCE_CHECKPOINT,
-    ("prostate", "nnunet"): PROSTATE_NNUNET_SOURCE_CHECKPOINT,
+    ("prostate", "nnunet_official"): PROSTATE_NNUNET_OFFICIAL_SOURCE_CHECKPOINT,
+    ("polyp", "resunet34"): POLYP_RESUNET_SOURCE_CHECKPOINT,
+    ("polyp", "nnunet"): POLYP_NNUNET_SOURCE_CHECKPOINT,
+    ("polyp", "nnunet_official"): POLYP_NNUNET_OFFICIAL_SOURCE_CHECKPOINT,
 }
 PRETRAINED_RESUNET_CHECKPOINT = CHECKPOINT_DIR / "pretrain-ResUnet.pth"
 DINOV3_ARCH = "vit_large_patch16_dinov3.lvd1689m"

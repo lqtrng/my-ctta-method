@@ -11,7 +11,7 @@ back here when a file is missing.
 
 Public foundation-model weights come from their official sources.  Files with
 no public download (the OD/OC data, the prepared prostate data, this
-project's checkpoints) come from the private Kaggle asset bundle, see
+project's checkpoints) come from the public Kaggle asset bundle, see
 ``bundle.py``.  Assets marked optional are used only by ``extras/`` and are
 fetched only when named.
 """
@@ -40,11 +40,15 @@ from common.paths import (  # noqa: E402
     MEDDINOV3_CHECKPOINT,
     MEDDINOV3_REPO_DIR,
     MODEL_DIR,
+    POLYP_DINOV3_HEAD_CHECKPOINT,
     POLYP_DIR,
     PRETRAINED_RESUNET_CHECKPOINT,
     PROSTATE_ARCHIVE,
+    PROSTATE_DINOV3_FULL_IMAGE_HEAD_CHECKPOINT,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
     PROSTATE_DIR,
+    PROSTATE_NNUNET_CROP_CHECKPOINT,
+    RESUNET_CROP_CHECKPOINT,
     SAM_CHECKPOINT,
     SOURCE_CHECKPOINTS,
     dinov3_weights,
@@ -155,7 +159,7 @@ ASSETS = {
     # Public foundation models.
     "dinov3": Asset(dinov3_weights(MODEL_DIR, DINOV3_ARCH), "redifm_dinov3, dinov3_*", fetch_dinov3),
     "sam": Asset(SAM_CHECKPOINT, "redifm_sam", fetch_sam),
-    # Asset bundle (private Kaggle dataset).
+    # Asset bundle (public Kaggle dataset).
     "data": Asset(DATA_DIR, "all OD/OC methods", lambda _: from_bundle(DATA_DIR)),
     "prostate": Asset(PROSTATE_DIR / "manifest.json", "prostate experiments", lambda _: from_bundle(PROSTATE_DIR)),
     "polyp": Asset(POLYP_DIR / "manifest.json", "polyp experiments", lambda _: from_bundle(POLYP_DIR)),
@@ -167,6 +171,12 @@ ASSETS = {
     "dinov3-head": checkpoint(DINOV3_HEAD_CHECKPOINT, "redifm_dinov3 (odoc), dinov3_dual"),
     "dinov3-full-image-head": checkpoint(DINOV3_FULL_IMAGE_HEAD_CHECKPOINT, "dinov3_single, dinov3_dual"),
     "prostate-dinov3-head": checkpoint(PROSTATE_DINOV3_HEAD_CHECKPOINT, "redifm_dinov3 (prostate)"),
+    "prostate-dinov3-full-image-head": checkpoint(
+        PROSTATE_DINOV3_FULL_IMAGE_HEAD_CHECKPOINT, "demo_dinov3_prostate"
+    ),
+    "prostate-nnunet-crop": checkpoint(PROSTATE_NNUNET_CROP_CHECKPOINT, "redifm_dinov3_nnunet_crop (prostate)"),
+    "resunet-crop": checkpoint(RESUNET_CROP_CHECKPOINT, "redifm_dinov3_nnunet_crop (odoc)"),
+    "polyp-dinov3-head": checkpoint(POLYP_DINOV3_HEAD_CHECKPOINT, "redifm_dinov3 (polyp)"),
     # extras/ only.
     "prostate-public": Asset(
         PROSTATE_ARCHIVE, "regenerating data/prostate-6 with prepare_prostate.py", fetch_prostate, optional=True

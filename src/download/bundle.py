@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The asset bundle: a private Kaggle dataset with everything that has no public download.
+"""The asset bundle: a public Kaggle dataset with the data and checkpoints the code reads.
 
 It holds exactly the files the methods read and nothing else:
 
@@ -13,13 +13,14 @@ It holds exactly the files the methods read and nothing else:
 Publishing (once, by whoever owns the files):
 
     python src/download/bundle.py build             # stage the files in .cache/kaggle-bundle
-    kaggle datasets create -p .cache/kaggle-bundle --dir-mode zip      # first upload (private)
+    kaggle datasets create -p .cache/kaggle-bundle --dir-mode zip      # first upload
     kaggle datasets version -p .cache/kaggle-bundle --dir-mode zip -m "..."   # later updates
 
 Fetching is done by ``download.py``: on Kaggle the attached dataset is linked
-from ``/kaggle/input``; elsewhere it is downloaded once into ``.cache/`` with
-the Kaggle CLI.  Either way the files are linked into ``data/`` and
-``CHECKPOINT_DIR``, so every path in ``common/paths.py`` stays the same.
+from ``/kaggle/input``; elsewhere it is downloaded once into ``.cache/`` over
+HTTPS (the dataset is public, so no Kaggle account is needed).  Either way the
+files are linked into ``data/`` and ``CHECKPOINT_DIR``, so every path in
+``common/paths.py`` stays the same.
 The dataset id is ``common.paths.KAGGLE_DATASET`` (``REDIFM_KAGGLE_DATASET``).
 """
 
@@ -29,8 +30,8 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
 
@@ -46,11 +47,15 @@ from common.paths import (  # noqa: E402
     DRISHTI_ARCHIVE,
     KAGGLE_DATASET,
     ON_KAGGLE,
+    POLYP_DINOV3_HEAD_CHECKPOINT,
     POLYP_DIR,
     PRETRAINED_RESUNET_CHECKPOINT,
     PROJECT_DIR,
+    PROSTATE_NNUNET_CROP_CHECKPOINT,
+    PROSTATE_DINOV3_FULL_IMAGE_HEAD_CHECKPOINT,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
     PROSTATE_DIR,
+    RESUNET_CROP_CHECKPOINT,
     SOURCE_CHECKPOINTS,
 )
 
@@ -75,6 +80,10 @@ CHECKPOINTS = (
     DINOV3_HEAD_CHECKPOINT,
     DINOV3_FULL_IMAGE_HEAD_CHECKPOINT,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
+    PROSTATE_DINOV3_FULL_IMAGE_HEAD_CHECKPOINT,
+    PROSTATE_NNUNET_CROP_CHECKPOINT,
+    RESUNET_CROP_CHECKPOINT,
+    POLYP_DINOV3_HEAD_CHECKPOINT,
     PRETRAINED_RESUNET_CHECKPOINT,
 )
 
@@ -138,7 +147,6 @@ def build(staging: Path) -> None:
     (staging / "dataset-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     size = sum(file.stat().st_size for file in staging.rglob("*") if file.is_file())
     print(f"Staged {size / 1e9:.1f} GB in {staging} for Kaggle dataset {KAGGLE_DATASET}.")
-    print("Keep the dataset private: the OD/OC and polyp datasets have their own licenses.")
     print(f"Upload: kaggle datasets create -p {staging} --dir-mode zip")
 
 
@@ -175,16 +183,20 @@ def _find_bundle_root() -> Path:
             "or set REDIFM_KAGGLE_DATASET to its id."
         )
     if not (DOWNLOAD_DIR / "checkpoints").is_dir():
-        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        cli = Path(sys.executable).with_name("kaggle")
-        command = [str(cli) if cli.is_file() else "kaggle", "datasets", "download", KAGGLE_DATASET]
+        # The dataset is public: a plain HTTPS download, no Kaggle account or API key.
+        url = f"https://www.kaggle.com/api/v1/datasets/download/{KAGGLE_DATASET}"
+        archive = DOWNLOAD_DIR.with_suffix(".zip")
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Downloading the asset bundle {KAGGLE_DATASET} (about 4.5 GB) into {DOWNLOAD_DIR}")
         try:
-            subprocess.run([*command, "-p", str(DOWNLOAD_DIR), "--unzip"], check=True)
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise FileNotFoundError(
-                f"Could not download the asset bundle {KAGGLE_DATASET} ({error}). It needs Kaggle "
-                "API credentials (~/.kaggle/kaggle.json) with access to the dataset."
-            ) from error
+            with urllib.request.urlopen(url) as response, archive.open("wb") as handle:
+                shutil.copyfileobj(response, handle, length=1 << 22)
+            with ZipFile(archive) as opened:
+                opened.extractall(DOWNLOAD_DIR)
+        except OSError as error:
+            raise FileNotFoundError(f"Could not download the asset bundle from {url} ({error})") from error
+        finally:
+            archive.unlink(missing_ok=True)
     return DOWNLOAD_DIR
 
 
@@ -193,6 +205,17 @@ def _locate(relative: str) -> Path:
     for root in (bundle_root(), DOWNLOAD_DIR):
         if (root / relative).exists():
             return root / relative
+    # Kaggle extracts uploaded zip files (the Drishti-GS archive): zip the folder again.
+    extracted = bundle_root() / relative.removesuffix(".zip")
+    if relative.endswith(".zip") and extracted.is_dir():
+        archive = DOWNLOAD_DIR / relative
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with ZipFile(archive.with_suffix(".part"), "w", ZIP_STORED) as target:
+            for file in sorted(extracted.rglob("*")):
+                if file.is_file():
+                    target.write(file, file.relative_to(extracted))
+        archive.with_suffix(".part").replace(archive)
+        return archive
     parts = Path(relative).parts
     for depth in range(1, len(parts) + 1):
         prefix = Path(*parts[:depth])

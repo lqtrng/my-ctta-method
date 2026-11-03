@@ -37,7 +37,9 @@ class FullImageSegmenter:
         self.model = model
         self.layers = tuple(checkpoint["layers"])
         self.resolution = checkpoint["crop_resolution"]
-        self.head = SegmentationHead(model.embed_dim * len(self.layers), checkpoint["hidden"])
+        self.head = SegmentationHead(
+            model.embed_dim * len(self.layers), checkpoint["hidden"], checkpoint.get("num_classes", 3)
+        )
         self.head.load_state_dict(checkpoint["state_dict"])
         self.head.requires_grad_(False).to(device).eval()
 

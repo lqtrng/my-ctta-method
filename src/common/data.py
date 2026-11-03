@@ -1,4 +1,4 @@
-"""Benchmark data: OD/OC (source A, target stream B-E) and prostate MRI (domains A-F)."""
+"""Benchmark data: OD/OC (source A, target stream B-E), prostate MRI (domains A-F) and polyp (domains A-D)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-from common.paths import DATA_DIR, DRISHTI_ARCHIVE, PROSTATE_DIR
+from common.paths import DATA_DIR, DRISHTI_ARCHIVE, POLYP_DIR, PROSTATE_DIR
 
 
 EXPECTED_COUNTS = {"B": 400, "C": 650, "D": 800, "E": 101}
@@ -21,6 +21,9 @@ EXPECTED_COUNTS = {"B": 400, "C": 650, "D": 800, "E": 101}
 PROSTATE_SITES = {"A": "BIDMC", "B": "BMC", "C": "HK", "D": "I2CVB", "E": "RUNMC", "F": "UCL"}
 PROSTATE_EXPECTED_COUNTS = {"A": 261, "B": 384, "C": 158, "D": 468, "E": 421, "F": 175}
 PROSTATE_IMAGE_SIZE = 384
+# Four polyp datasets (0140.pdf, Section 4.1), laid out by download/prepare_polyp.py.
+POLYP_DATASETS = {"A": "BKAI_IGH_NeoPolyp", "B": "CVC_ClinicDB", "C": "ETIS_LaribPolypDB", "D": "Kvasir_SEG"}
+POLYP_EXPECTED_COUNTS = {"A": 1000, "B": 612, "C": 196, "D": 1000}
 
 
 @dataclass(frozen=True)
@@ -111,10 +114,10 @@ def build_domains(selected: list[str], max_images: int | None) -> dict[str, list
                 f"Domain {domain}: expected {EXPECTED_COUNTS[domain]} samples, "
                 f"found {len(samples)}"
             )
+    # In the order given: the target stream follows ``selected``.
     return {
-        domain: samples[:max_images] if max_images is not None else samples
-        for domain, samples in all_domains.items()
-        if domain in selected
+        domain: all_domains[domain][:max_images] if max_images is not None else all_domains[domain]
+        for domain in selected
     }
 
 
@@ -125,7 +128,7 @@ def build_prostate_domains(selected: list[str], max_images: int | None) -> dict[
     returns them unchanged.
     """
     domains: dict[str, list[Sample]] = {}
-    for domain in sorted(selected):
+    for domain in selected:  # The target stream follows the order given.
         site = PROSTATE_SITES[domain]
         folder = PROSTATE_DIR / f"domain_{domain}_{site}"
         samples = pair_directories(domain, site, folder / "Images", folder / "Masks")
@@ -133,6 +136,22 @@ def build_prostate_domains(selected: list[str], max_images: int | None) -> dict[
             raise RuntimeError(
                 f"Prostate domain {domain}: expected {PROSTATE_EXPECTED_COUNTS[domain]} "
                 f"slices, found {len(samples)}"
+            )
+        domains[domain] = samples[:max_images] if max_images is not None else samples
+    return domains
+
+
+def build_polyp_domains(selected: list[str], max_images: int | None) -> dict[str, list[Sample]]:
+    """Polyp domains in stream order; masks are class-index PNGs (0 background, 1 polyp)."""
+    domains: dict[str, list[Sample]] = {}
+    for domain in selected:  # The target stream follows the order given.
+        dataset = POLYP_DATASETS[domain]
+        folder = POLYP_DIR / f"domain_{domain}_{dataset}"
+        samples = pair_directories(domain, dataset, folder / "Images", folder / "Masks")
+        if len(samples) != POLYP_EXPECTED_COUNTS[domain]:
+            raise RuntimeError(
+                f"Polyp domain {domain}: expected {POLYP_EXPECTED_COUNTS[domain]} "
+                f"images, found {len(samples)}"
             )
         domains[domain] = samples[:max_images] if max_images is not None else samples
     return domains
@@ -178,8 +197,9 @@ def atomic_json_write(path: Path, payload: Any) -> None:
 class DomainADataset(Dataset):
     """RIM-ONE-r3 images paired by filename stem with REFUGE-style masks."""
 
-    def __init__(self, root: Path, image_size: int) -> None:
+    def __init__(self, root: Path, image_size: int, original: bool = False) -> None:
         self.image_size = (image_size, image_size)
+        self.original = original
         pairs: list[tuple[Path, Path]] = []
 
         for split in ("training", "testing"):
@@ -206,21 +226,28 @@ class DomainADataset(Dataset):
     def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
         image_path, mask_path = self.pairs[index]
         with Image.open(image_path) as source:
-            image = source.convert("RGB").resize(self.image_size, Image.Resampling.BILINEAR)
+            full = source.convert("RGB")
+        image = full.resize(self.image_size, Image.Resampling.BILINEAR)
         with Image.open(mask_path) as source:
             raw_mask = source.convert("L").resize(self.image_size, Image.Resampling.NEAREST)
-
-        image_array = np.asarray(image, dtype=np.float32).transpose(2, 0, 1)
-        minimum = float(image_array.min())
-        maximum = float(image_array.max())
-        image_array = (image_array - minimum) / max(maximum - minimum, 1e-7)
+        image_array = normalized_array(image)
 
         # Raw masks: 255=background, 128=optic disc, 0=optic cup.
         raw = np.asarray(raw_mask, dtype=np.uint8)
         target = np.zeros(raw.shape, dtype=np.int16)
         target[raw < 255] = 1
         target[raw == 0] = 2
+        if self.original:
+            return image_array, target[np.newaxis], normalized_array(full)
         return image_array, target[np.newaxis]
+
+
+def normalized_array(image: Image.Image) -> np.ndarray:
+    """Channels-first float array, min-max normalized per image to [0, 1]."""
+    array = np.asarray(image, dtype=np.float32).transpose(2, 0, 1)
+    minimum = float(array.min())
+    maximum = float(array.max())
+    return (array - minimum) / max(maximum - minimum, 1e-7)
 
 
 class SampleDataset(Dataset):
@@ -230,21 +257,20 @@ class SampleDataset(Dataset):
     image to [0, 1]; targets are class indices with a leading channel axis.
     """
 
-    def __init__(self, samples: list[Sample], image_size: int) -> None:
+    def __init__(self, samples: list[Sample], image_size: int, original: bool = False) -> None:
         self.samples = samples
         self.image_size = (image_size, image_size)
+        self.original = original
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
-        image, target = load_sample(self.samples[index])
-        image = image.resize(self.image_size, Image.Resampling.BILINEAR)
+        full, target = load_sample(self.samples[index])
+        image = full.resize(self.image_size, Image.Resampling.BILINEAR)
         target = np.asarray(
             Image.fromarray(target).resize(self.image_size, Image.Resampling.NEAREST), dtype=np.int16
         )
-        image_array = np.asarray(image, dtype=np.float32).transpose(2, 0, 1)
-        minimum = float(image_array.min())
-        maximum = float(image_array.max())
-        image_array = (image_array - minimum) / max(maximum - minimum, 1e-7)
-        return image_array, target[np.newaxis]
+        if self.original:
+            return normalized_array(image), target[np.newaxis], normalized_array(full)
+        return normalized_array(image), target[np.newaxis]

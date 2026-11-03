@@ -49,8 +49,12 @@ METHODS = {
     "source_only": "baselines.source_only",
     "dinov3_single": "baselines.dinov3_single",
     "dinov3_dual": "baselines.dinov3_dual",
+    "dinov3_crop": "baselines.dinov3_crop",
     "redifm_sam": "methods.redifm_sam",
     "redifm_dinov3": "methods.redifm_dinov3",
+    "redifm_dinov3_dual": "methods.redifm_dinov3_dual",
+    "redifm_dinov3_nnunet_crop": "methods.redifm_dinov3_nnunet_crop",
+    "detect_crop_tta": "methods.detect_crop_tta",
 }
 
 
@@ -123,7 +127,7 @@ def build_parser(method: str | None) -> argparse.ArgumentParser:
     parser.add_argument("--domains", nargs="+", help="Target domains (default: every target of --task)")
     parser.add_argument("--rounds", type=int, default=1, help="Passes over the target stream, never reset")
     parser.add_argument("--max-images", type=int, help="Limit images per domain for a smoke test")
-    parser.add_argument("--image-size", type=int, help="Default: the task's (512 OD/OC, 384 prostate)")
+    parser.add_argument("--image-size", type=int, help="Default: the task's (512 OD/OC, 384 prostate, 352 polyp)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", help="PyTorch device (default: the method's, usually cuda when available)")
     parser.add_argument("--output", type=Path,

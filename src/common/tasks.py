@@ -5,6 +5,8 @@ structures OD (rim + cup) and OC; source domain A, target stream B-E, 512 x 512.
 ``prostate``: six-site prostate MRI (0140.pdf, Section 4.1), classes
 {background, prostate}, one structure; source domain A, target stream B-F,
 384 x 384.
+``polyp``: four polyp datasets (0140.pdf, Section 4.1), classes {background,
+polyp}, one structure; source domain A, target stream B-D, 352 x 352.
 
 Every task scores a prediction per structure with DSC; the image score is the
 mean over structures, and Do. A the unweighted mean over target domains.
@@ -24,6 +26,7 @@ from common.data import (
     Sample,
     SampleDataset,
     build_domains,
+    build_polyp_domains,
     build_prostate_domains,
 )
 from common.paths import DOMAIN_A_DIR
@@ -37,12 +40,14 @@ class Task:
     image_size: int
     target_domains: tuple[str, ...]
     build_domains: Callable[[list[str], int | None], dict[str, list[Sample]]]
+    # ReDi-FM's online Adam learning rate (0140.pdf, Section 4.2).
+    learning_rate: float = 1e-4
 
-    def source_dataset(self) -> Dataset:
-        """Labeled source domain A in the format of ``DomainADataset``."""
+    def source_dataset(self, original: bool = False) -> Dataset:
+        """Labeled source domain A in the format of ``DomainADataset`` (+ the full-size image)."""
         if self.name == "odoc":
-            return DomainADataset(DOMAIN_A_DIR, self.image_size)
-        return SampleDataset(self.build_domains(["A"], None)["A"], self.image_size)
+            return DomainADataset(DOMAIN_A_DIR, self.image_size, original)
+        return SampleDataset(self.build_domains(["A"], None)["A"], self.image_size, original)
 
     def structure_masks(self, classes: torch.Tensor) -> list[torch.Tensor]:
         """Per-structure binary masks of a class map (structures are nested)."""
@@ -76,7 +81,7 @@ class Task:
         }
 
     def describe(self, summary: dict[str, object]) -> str:
-        labels = {"disc": "OD", "cup": "OC", "prostate": "Prostate"}
+        labels = {"disc": "OD", "cup": "OC", "prostate": "Prostate", "polyp": "Polyp"}
         scores = ", ".join(
             f"{labels[name]}={summary[f'{name}_dsc']:.2f}" for name in self.structures
         )
@@ -90,4 +95,5 @@ class Task:
 TASKS = {
     "odoc": Task("odoc", 3, ("disc", "cup"), 512, tuple("BCDE"), build_domains),
     "prostate": Task("prostate", 2, ("prostate",), 384, tuple("BCDEF"), build_prostate_domains),
+    "polyp": Task("polyp", 2, ("polyp",), 352, tuple("BCD"), build_polyp_domains, learning_rate=1e-5),
 }

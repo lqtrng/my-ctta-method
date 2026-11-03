@@ -213,7 +213,7 @@ def adaptation_step(
 def add_arguments(parser: argparse._ArgumentGroup) -> None:
     parser.add_argument("--source-checkpoint", type=Path, help="Default: the task's ResUNet-34")
     parser.add_argument("--sam-checkpoint", type=Path, default=SAM_CHECKPOINT)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--learning-rate", type=float, help="Default: the task's (1e-4, polyp 1e-5)")
     parser.add_argument("--pseudo-threshold", type=float, default=0.5)
     parser.add_argument(
         "--entropy-threshold",
@@ -252,6 +252,7 @@ def validate_args(args: argparse.Namespace) -> None:
 def build(args: argparse.Namespace, task: Task):
     args.source_checkpoint = (args.source_checkpoint or SOURCE_CHECKPOINTS[(task.name, "resunet34")]).resolve()
     args.device = args.device or "cpu"
+    args.learning_rate = args.learning_rate if args.learning_rate is not None else task.learning_rate
     validate_args(args)
     device = torch.device(args.device)
     state_dict = torch.load(args.source_checkpoint, map_location="cpu", weights_only=True, mmap=True)

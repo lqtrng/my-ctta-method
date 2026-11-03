@@ -1,0 +1,31 @@
+{
+  "rounds": [
+    {
+      "round": 1,
+      "domains": {
+        "B": 76.69034487034293,
+        "C": 58.26182924748659,
+        "D": 81.03914779079138
+      },
+      "mean_dsc": 71.99710730287363
+    }
+  ],
+  "config": {
+    "data": "data/polyp-4",
+    "domains": "['B', 'C', 'D']",
+    "image_size": "352",
+    "source_model": "/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/polyp_dinov3_vitl16_head_full_image_domain_A.pth",
+    "crop_model": "/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/polyp_domain_A_ResUNet34_crop.pth",
+    "target_model": "/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/polyp_domain_A_ResUNet34.pth",
+    "dinov3_weights": "/run/media/lqtrung/1tb-ssd/Model/timm-vit_large_patch16_dinov3.lvd1689m",
+    "output": "results/crop_teach_tta/polyp",
+    "rounds": "1",
+    "max_images": "None",
+    "learning_rate": "2e-05",
+    "threshold": "0.5",
+    "crop_scale": "2.0",
+    "min_crop": "96",
+    "seed": "0",
+    "device": "cuda"
+  }
+}

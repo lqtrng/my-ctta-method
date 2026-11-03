@@ -45,6 +45,7 @@ from common.paths import (
     DINOV3_ARCH,
     DINOV3_HEAD_CHECKPOINT,
     MODEL_DIR,
+    POLYP_DINOV3_HEAD_CHECKPOINT,
     PROSTATE_DINOV3_HEAD_CHECKPOINT,
     SOURCE_CHECKPOINTS,
     dinov3_weights,
@@ -62,6 +63,7 @@ from common.redifm import (
     consensus_score,
     hard_class_balanced_soft_loss,
     largest_component,
+    most_confident_component,
     nested_foundation_classes,
     structure_aware_points,
     structure_probabilities,
@@ -70,7 +72,11 @@ from common.redifm import (
 from common.tasks import TASKS, Task
 
 
-HEAD_CHECKPOINTS = {"odoc": DINOV3_HEAD_CHECKPOINT, "prostate": PROSTATE_DINOV3_HEAD_CHECKPOINT}
+HEAD_CHECKPOINTS = {
+    "odoc": DINOV3_HEAD_CHECKPOINT,
+    "prostate": PROSTATE_DINOV3_HEAD_CHECKPOINT,
+    "polyp": POLYP_DINOV3_HEAD_CHECKPOINT,
+}
 # 0140.pdf Table 1, ReDi-FM with SAM, source domain A.
 PAPER_DO_A = {"odoc": 73.11, "prostate": 66.10}
 
@@ -121,7 +127,11 @@ class DinoV3Segmenter:
     def crop_box(self, disc_mask: np.ndarray, disc_probability: np.ndarray) -> tuple[int, int, int]:
         """Square region of interest centered on the source optic disc."""
         size = disc_mask.shape[0]
-        component = largest_component(disc_mask)
+        if self.args.crop_region == "confident":
+            component = most_confident_component(disc_mask, disc_probability)
+        else:
+            # "all" (baselines/dinov3_crop.py) passes one region at a time.
+            component = largest_component(disc_mask)
         if not component.any():
             row, column = np.unravel_index(np.argmax(disc_probability), disc_probability.shape)
             component[row, column] = True
@@ -375,7 +385,7 @@ def add_arguments(parser: argparse._ArgumentGroup) -> None:
                         help="Default: the domain-A checkpoint of --task and --arch")
     parser.add_argument("--dinov3-dir", type=Path, default=MODEL_DIR)
     parser.add_argument("--dinov3-arch", default=DINOV3_ARCH)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--learning-rate", type=float, help="Default: the task's (1e-4, polyp 1e-5)")
     parser.add_argument("--pseudo-threshold", type=float, default=0.5)
     parser.add_argument(
         "--entropy-threshold",
@@ -386,6 +396,9 @@ def add_arguments(parser: argparse._ArgumentGroup) -> None:
     parser.add_argument("--crop-scale", type=float, default=2.0,
                         help="Crop side as a multiple of the source disc extent")
     parser.add_argument("--min-crop", type=int, default=96)
+    parser.add_argument("--crop-region", choices=("largest", "confident", "all"), default="all",
+                        help="Which region of the mask places the crop: the largest, the most confident, "
+                             "or one crop per region (all: dinov3_crop and redifm_dinov3_nnunet_crop)")
     parser.add_argument("--crop-resolution", type=int, default=512,
                         help="DINOv3 input resolution for the crop (multiple of 16)")
     parser.add_argument("--temperature", type=float, default=0.05,
@@ -414,6 +427,7 @@ def add_arguments(parser: argparse._ArgumentGroup) -> None:
 
 def build(args: argparse.Namespace, task: Task):
     resolve_checkpoints(args, task)
+    args.learning_rate = args.learning_rate or task.learning_rate
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     state_dict = torch.load(args.source_checkpoint, map_location="cpu", weights_only=True)
     source_model = build_network(args.arch, task.num_classes, args.image_size)

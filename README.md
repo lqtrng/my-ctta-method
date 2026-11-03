@@ -85,6 +85,10 @@ The paper does not give the entropy threshold (0.5) or the augmentation magnitud
 | DINOv3 dual (full-image DINOv3 + crop DINOv3, fused, no adaptation) | 41.52 | 85.10 | 61.75 | 84.01 | 68.09 |
 | nnU-Net only (nnU-Net 2D source model, no adaptation) | 75.80 | 60.20 | 67.43 | 74.78 | 69.55 |
 | ReDi-FM + DINOv3 with nnU-Net (seed 0) | 82.52 | 80.71 | 82.67 | 82.50 | 82.10 |
+| ReDi-FM with DINOv3 only (full-image DINOv3 as source, adapting its head; crop DINOv3 as foundation; seed 0) | 57.28 | 86.66 | 71.32 | 86.86 | 75.53 |
+| DINOv3 places the crop, crop ResUNet-34 teaches, ResUNet-34 adapts (`redifm_dinov3_nnunet_crop`, mean of seeds 0/1/2) | 80.70 | 85.33 | 76.75 | 82.73 | 81.38 ± 0.08 |
+| DINOv3 places the crop, crop ResUNet-34 predicts, no adaptation (`dinov3_crop`) | 40.52 | 67.69 | 44.40 | 78.25 | 57.72 |
+| The same, refining every DINOv3 region (`dinov3_crop --crop-region all`) | 79.01 | 67.06 | 35.17 | 78.22 | 64.87 |
 
 - **Where the gain comes from.** Almost all of it is in OC: +15 to +22 DSC on B, C and D. OD is on par with SAM.
 - **Forgetting check.** In the long-term check (the Table 3 protocol, 3 rounds of B→C→D→E, seed 0), the rounds give 77.57 / 75.97 / 77.39. That is an average of 76.98, a gain of +23.31 over source only, and a performance degradation of 0.59.
@@ -93,15 +97,29 @@ The paper does not give the entropy threshold (0.5) or the augmentation magnitud
 
 ## Results (prostate, source domain A = BIDMC, prostate DSC)
 
-The source models are trained on domain A with the repository recipe (`training/train_source.py --task prostate`). The target stream is B → F, with no reset and seed 0.
+The source models are trained on domain A: ResUNet-34 with the repository recipe (`training/train_source.py --task prostate`), nnU-Net with nnU-Net v2's own defaults for 100 epochs (`training/train_nnunet.py`, `--arch nnunet_official`). The target stream is B → F, with no reset and seed 0.
 
 | Method | B (BMC) | C (HK) | D (I2CVB) | E (RUNMC) | F (UCL) | **Do. A** |
 |---|---|---|---|---|---|---|
 | Source only, ResUNet-34 | 19.07 | 72.54 | 9.60 | 23.47 | 7.75 | 26.49 |
-| nnU-Net only (no adaptation) | 58.05 | 66.94 | 23.15 | 51.86 | 39.28 | 47.86 |
-| ReDi-FM + DINOv3, ResUNet-34 | 52.21 | **77.61** | 43.02 | **64.79** | 36.96 | 54.92 |
-| **ReDi-FM + DINOv3, nnU-Net** | **70.08** | 72.06 | **62.64** | 64.47 | **63.69** | **66.59** |
+| nnU-Net only (no adaptation) | 77.99 | 64.45 | 32.18 | 68.35 | 62.23 | 61.04 |
+| ReDi-FM + DINOv3, ResUNet-34 | 52.21 | 77.61 | 43.02 | 64.79 | 36.96 | 54.92 |
+| DINOv3 single (full-image head, no adaptation) | 82.34 | 79.98 | 60.63 | 64.84 | 47.70 | 67.10 |
+| ReDi-FM with DINOv3 only (full-image DINOv3 as source, adapting its head; crop DINOv3 as foundation) | **84.60** | 83.61 | 63.92 | 70.67 | 54.24 | 71.41 |
+| ReDi-FM + DINOv3, nnU-Net | 82.47 | 81.56 | 57.25 | 71.92 | 71.18 | 72.88 |
+| **DINOv3 places the crop, crop nnU-Net teaches, nnU-Net adapts** (`redifm_dinov3_nnunet_crop`, mean of seeds 0/1/2) | 84.03 | **84.34** | **68.82** | **79.11** | **77.94** | **78.85 ± 0.33** |
 | Paper (`0140.pdf` Table 1): Source Only / ReDi-FM + SAM | | | | | | 51.02 / 66.10 |
+
+## Results (polyp, source domain A = BKAI-IGH NeoPolyp, DSC)
+
+ResUNet-34 models and a DINOv3 head trained on domain A, seed 0. The paper uses Segformer-B0, so these are not comparable with its Table 2. Predicted masks are in `results/crop_teach_tta/polyp/masks/`.
+
+| Method | B (CVC-ClinicDB) | C (ETIS-Larib) | D (Kvasir-SEG) | **Do. A** |
+|---|---|---|---|---|
+| Source only, ResUNet-34 | 72.12 | **60.99** | 80.08 | 71.06 |
+| `crop_teach_tta.py`, ResUNet-34 | 76.69 | 58.26 | 81.04 | 72.00 |
+| DINOv3 places the crop, crop ResUNet-34 predicts, no adaptation (`dinov3_crop`) | 80.68 | 79.82 | 84.02 | 81.50 |
+| **The same, refining every DINOv3 region** (`dinov3_crop --crop-region all`) | **80.94** | **79.89** | **84.55** | **81.79** |
 
 ## Reproducing the results
 
@@ -115,16 +133,17 @@ One script reproduces everything, from a fresh clone, locally or in a Kaggle not
 | Stage | What it does |
 |---|---|
 | `setup` | install `requirements.txt` (PyTorch itself is preinstalled on Kaggle; install it first locally) |
-| `assets` | `src/download/download.py`: public foundation models (DINOv3, SAM ViT-H) from their official sources, and the data and this project's checkpoints from the private asset bundle |
+| `assets` | `src/download/download.py`: public foundation models (DINOv3, SAM ViT-H) from their official sources, and the data and this project's checkpoints from the public asset bundle |
 | `odoc` | every row of the OD/OC table |
 | `prostate` | every row of the prostate table |
 | `long_term` | the 3-round forgetting check |
+| `polyp` | polyp benchmark with `crop_teach_tta.py` and ResUNet-34; only when named, not in the default run. The paper uses Segformer-B0, so these scores are not comparable with its Table 2 |
 
 A checkpoint that the bundle lacks (a source model or a DINOv3 head) is trained on domain A before it is first used, with the recipe that produced it. `SEEDS`, `PYTHON` and the other settings are listed at the top of `reproduce.sh`.
 
 ### On Kaggle
 
-1. In a new notebook, turn on a GPU and Internet, then use **Add Input** to attach the asset dataset `wiedergeburt/redifm-assets`. The owner shares it with you.
+1. In a new notebook, turn on a GPU and Internet, then use **Add Input** to attach the public dataset `wiedergeburt/redifm-assets`.
 2. Run:
    ```bash
    !git clone https://github.com/lqtrng/my-ctta-method.git /kaggle/working/ReDi-FM
@@ -134,19 +153,19 @@ A checkpoint that the bundle lacks (a source model or a DINOv3 head) is trained 
 
 ### Locally
 
-The same commands work. `download.py` downloads the asset bundle once into `.cache/`, using the Kaggle CLI and your API token in `~/.kaggle/kaggle.json`. Files that are already in place are never fetched again.
+The same commands work. `download.py` downloads the asset bundle once into `.cache/` over HTTPS. The dataset is public, so no Kaggle account or API key is needed. Files that are already in place are never fetched again.
 
 ### The asset bundle
 
-The OD/OC datasets, the prepared prostate slices and polyp images and this project's checkpoints have no single public download. They are published once as a private Kaggle dataset, holding only the files the code reads (about 4.4 GB):
+The OD/OC datasets, the prepared prostate slices and polyp images and this project's checkpoints have no single public download. They are published as the public Kaggle dataset [`wiedergeburt/redifm-assets`](https://www.kaggle.com/datasets/wiedergeburt/redifm-assets), holding only the files the code reads (about 4.7 GB). To publish a new version:
 
 ```bash
 python src/download/bundle.py build                                   # stage into .cache/kaggle-bundle
-kaggle datasets create -p .cache/kaggle-bundle --dir-mode zip         # first upload (private by default)
+kaggle datasets create -p .cache/kaggle-bundle --dir-mode zip         # first upload
 kaggle datasets version -p .cache/kaggle-bundle --dir-mode zip -m "new checkpoints"   # later
 ```
 
-Keep it private: the OD/OC datasets carry their own licenses. `REDIFM_KAGGLE_DATASET` selects another dataset id.
+The images remain under the original datasets' terms of use (listed in the dataset description). `REDIFM_KAGGLE_DATASET` selects another dataset id.
 
 ## Experiment tracking (MLflow)
 
@@ -178,11 +197,15 @@ src/
                prepare the prostate and polyp benchmarks, build the Kaggle asset bundle
   training/    train_source.py        ResUNet-34 or nnU-Net source model on domain A
                train_dinov3_head.py   DINOv3 decoder head on domain A (--full-image for the single/dual baselines)
-  baselines/   source_only.py         no adaptation (--arch nnunet: the "nnU-Net only" row)
+               train_nnunet.py        prostate nnU-Net with nnU-Net v2's own defaults (--arch nnunet_official; --crop: on enlarged crops)
+  baselines/   source_only.py         no adaptation (--arch nnunet, prostate: nnunet_official: the "nnU-Net only" row)
                dinov3_single.py       one frozen DINOv3 with a full-image head, no ResUNet, no adaptation
                dinov3_dual.py         full-image DINOv3 + DINOv3 crop teacher fused with Eq. 16, no adaptation
   methods/     redifm_sam.py          ReDi-FM with frozen SAM ViT-H (the paper's method)
-               redifm_dinov3.py       ReDi-FM with frozen DINOv3 ViT-L/16 (--arch nnunet: nnU-Net source/target)
+               redifm_dinov3.py       ReDi-FM with frozen DINOv3 ViT-L/16 (--arch nnunet, prostate: nnunet_official: nnU-Net source/target)
+               redifm_dinov3_dual.py  ReDi-FM with DINOv3 only: full-image head as source/target, crop head as foundation model
+               redifm_dinov3_nnunet_crop.py  frozen DINOv3 places the crop, frozen crop nnU-Net makes the pseudo ground truth, target nnU-Net adapts
+crop_teach_tta.py  the new method as one independent file, no training: pass three models and a data folder
 extras/        not part of reproduce.sh: zero-shot MedCLIP-SAMv2, DINOv3 teacher diagnostics, figure scripts
 ```
 

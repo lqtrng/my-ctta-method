@@ -52,6 +52,15 @@ def largest_component(mask: np.ndarray) -> np.ndarray:
     return components == int(np.argmax(sizes) + 1)
 
 
+def most_confident_component(mask: np.ndarray, probability: np.ndarray) -> np.ndarray:
+    """The connected region of the mask with the highest mean probability."""
+    components, count = ndimage.label(mask.astype(bool))
+    if count == 0:
+        return np.zeros_like(mask, dtype=bool)
+    means = ndimage.mean(probability, components, range(1, count + 1))
+    return components == int(np.argmax(means) + 1)
+
+
 def structure_aware_points(
     image: Image.Image,
     pseudo_mask: np.ndarray,
