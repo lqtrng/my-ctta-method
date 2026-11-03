@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adaptation Step Viewer</title>
+<style>
+  :root {
+    --bg: #f9f9f7;
+    --panel: #fcfcfb;
+    --text: #0b0b0b;
+    --muted: #52514e;
+    --faint: #898781;
+    --line: #e1e0d9;
+    --accent: #2a78d6;
+    --better: #006300;
+    --worse: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0d0d;
+      --panel: #1a1a19;
+      --text: #f0efec;
+      --muted: #c3c2b7;
+      --faint: #898781;
+      --line: #2c2c2a;
+      --accent: #3987e5;
+      --better: #0ca30c;
+      --worse: #f2857d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1500px; margin: 0 auto; padding: 18px 16px 32px; }
+  h1 { font-size: 20px; margin: 0 0 2px; }
+  .sub { color: var(--muted); margin: 0 0 14px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .controls label { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  input[type="range"] { flex: 1 1 260px; accent-color: var(--accent); }
+  button, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .step { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 140px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px 26px; margin: 14px 2px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .facts b { color: var(--text); font-weight: 600; }
+  .up { color: var(--better); } .down { color: var(--worse); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 18px 2px 8px; }
+  .grid { display: grid; gap: 10px; }
+  .grid.input { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 740px; }
+  .grid.sup, .grid.pred { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .grid.pred { max-width: 1110px; }
+  figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  figcaption { padding: 7px 10px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  figcaption span { font-weight: 600; }
+  figcaption small { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .view { position: relative; aspect-ratio: 1; background: #000; }
+  .view img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .box { position: absolute; border: 2px dashed #eb6834; pointer-events: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; color: var(--muted); font-size: 13px; align-items: center; }
+  .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 10px; }
+  .error { color: var(--worse); font-weight: 600; }
+  @media (max-width: 760px) {
+    .grid.sup, .grid.pred { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Adapting target, step by step</h1>
+  <p class="sub" id="sub">Loading data/steps.js…</p>
+
+  <section class="controls" aria-label="Step">
+    <button id="prev" title="Left arrow">◀</button>
+    <button id="play" title="Space">Play</button>
+    <button id="next" title="Right arrow">▶</button>
+    <input id="slider" type="range" min="0" value="0" aria-label="Step">
+    <span class="step" id="stepLabel"></span>
+    <label>Show <select id="filter">
+      <option value="all">every step</option>
+      <option value="beats">target beats both teachers</option>
+      <option value="behind">target below the crop teacher</option>
+      <option value="disagree">teachers disagree (consensus &lt; 0.5)</option>
+      <option value="improved">update helped (+5 or more)</option>
+      <option value="hurt">update hurt (−5 or more)</option>
+    </select></label>
+    <label>Speed <select id="speed"><option value="600">slow</option><option value="250" selected>normal</option><option value="80">fast</option></select></label>
+    <label><input type="checkbox" id="outline" checked> ground truth outline</label>
+    <label><input type="checkbox" id="showBox" checked> crop box</label>
+  </section>
+
+  <div class="facts" id="facts"></div>
+
+  <h2>Input</h2>
+  <div class="grid input">
+    <figure><figcaption><span>Test image</span><small id="cap-image"></small></figcaption><div class="view" id="v-image"></div></figure>
+    <figure><figcaption><span>What the target learned from (augmented)</span><small></small></figcaption><div class="view" id="v-augmented"></div></figure>
+  </div>
+
+  <h2>Supervision (frozen teachers)</h2>
+  <div class="grid sup">
+    <figure><figcaption><span>DINOv3 + full-image head</span><small id="cap-dinov3"></small></figcaption><div class="view" id="v-dinov3"></div></figure>
+    <figure><figcaption><span>Crop ResUNet-34</span><small id="cap-crop"></small></figcaption><div class="view" id="v-crop"></div></figure>
+    <figure><figcaption><span>Fused (soft target)</span><small id="cap-fused"></small></figcaption><div class="view" id="v-fused"></div></figure>
+  </div>
+
+  <h2>Target prediction</h2>
+  <div class="grid pred">
+    <figure><figcaption><span>Before this update</span><small id="cap-before"></small></figcaption><div class="view" id="v-before"></div></figure>
+    <figure><figcaption><span>After this update</span><small id="cap-after"></small></figcaption><div class="view" id="v-after"></div></figure>
+  </div>
+
+  <div class="legend">
+    <span><i class="sw" style="background:#2a78d6"></i>disc rim (or foreground)</span>
+    <span><i class="sw" style="background:#eda100"></i>cup</span>
+    <span><i class="sw" style="background:#fff;outline:1px solid var(--faint)"></i>ground truth outline</span>
+    <span><i class="sw" style="border:2px dashed #eb6834"></i>crop placed from the DINOv3 mask</span>
+  </div>
+  <p class="note">Scores are DSC against the ground truth, which the method never sees. "After" is the prediction that counts for this image. The target keeps its update and carries it to the next step.</p>
+</main>
+
+<script src="data/steps.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const PANELS = ["image", "augmented", "dinov3", "crop", "fused", "before", "after"];
+const WITH_BOX = new Set(["image", "dinov3", "crop", "fused"]);
+let index = 0, timer = null, order = [];
+
+function mean(scores) {
+  const values = Object.values(scores);
+  return values.reduce((a, b) => a + b, 0) / values.length;
+}
+function pct(x) { return (100 * x).toFixed(1); }
+function scoreText(scores) {
+  const parts = Object.entries(scores).map(([k, v]) => `${k} ${pct(v)}`);
+  return parts.length > 1 ? `${parts.join(" · ")} · mean ${pct(mean(scores))}` : pct(mean(scores));
+}
+
+function layer(view, src) {
+  const img = document.createElement("img");
+  img.src = src; img.alt = "";
+  view.appendChild(img);
+}
+
+function render() {
+  if (!window.DEMO) return;
+  const { meta, steps } = window.DEMO;
+  const s = steps[index];
+  const base = `data/${s.name}`;
+  for (const p of PANELS) {
+    const view = $(`v-${p}`);
+    view.replaceChildren();
+    if (p === "augmented") layer(view, `${base}_augmented.jpg`);
+    else layer(view, `${base}_image.jpg`);
+    if (!["image", "augmented"].includes(p)) layer(view, `${base}_${p}.png`);
+    if ($("outline").checked && p !== "augmented") layer(view, `${base}_outline.png`);
+    if ($("showBox").checked && WITH_BOX.has(p)) {
+      const [top, left, side] = s.crop;
+      const box = document.createElement("div");
+      box.className = "box";
+      Object.assign(box.style, { top: `${100 * top / meta.size}%`, left: `${100 * left / meta.size}%`,
+        width: `${100 * side / meta.size}%`, height: `${100 * side / meta.size}%` });
+      view.appendChild(box);
+    }
+  }
+  $("cap-image").textContent = s.image;
+  for (const k of ["dinov3", "crop", "fused", "before", "after"]) $(`cap-${k}`).textContent = scoreText(s.scores[k]);
+
+  const after = mean(s.scores.after), before = mean(s.scores.before);
+  const delta = after - before;
+  const seen = steps.slice(0, index + 1);
+  const recent = steps.slice(Math.max(0, index - 49), index + 1);
+  const avg = (list, k) => pct(list.reduce((a, x) => a + mean(x.scores[k]), 0) / list.length);
+  const agreements = s.agreements.map((a, i) => `${meta.structures[i]} ${a.toFixed(2)}`).join(", ");
+  $("facts").innerHTML = [
+    `This update: <b class="${delta >= 0 ? "up" : "down"}">${delta >= 0 ? "+" : ""}${pct(delta)}</b> DSC`,
+    `Consensus <b>${s.consensus.toFixed(2)}</b> (${agreements})`,
+    `Loss <b>${s.loss.toFixed(3)}</b>`,
+    `Last ${recent.length} steps, mean DSC: target <b>${avg(recent, "after")}</b> · DINOv3 <b>${avg(recent, "dinov3")}</b> · crop <b>${avg(recent, "crop")}</b>`,
+    `All ${seen.length} so far: target <b>${avg(seen, "after")}</b>`,
+  ].map((t) => `<span>${t}</span>`).join("");
+  $("slider").value = String(index);
+  $("stepLabel").textContent = `Step ${s.step} of ${steps.length}`;
+  const ahead = steps[index + 1];
+  if (ahead) for (const suffix of ["_image.jpg", "_augmented.jpg"]) new Image().src = `data/${ahead.name}${suffix}`;
+}
+
+function matches(s) {
+  const f = $("filter").value;
+  const a = mean(s.scores.after), d = mean(s.scores.dinov3), c = mean(s.scores.crop), b = mean(s.scores.before);
+  if (f === "beats") return a > d && a > c;
+  if (f === "behind") return a < c;
+  if (f === "disagree") return s.consensus < 0.5;
+  if (f === "improved") return a - b >= 0.05;
+  if (f === "hurt") return b - a >= 0.05;
+  return true;
+}
+function rebuild() {
+  order = window.DEMO.steps.map((s, i) => [s, i]).filter(([s]) => matches(s)).map(([, i]) => i);
+  if (order.length && !order.includes(index)) index = order.find((i) => i > index) ?? order[0];
+  render();
+}
+function move(direction) {
+  if (!order.length) return;
+  const position = order.indexOf(index);
+  const next = position < 0 ? order.find((i) => direction > 0 ? i > index : i < index)
+                            : order[position + direction];
+  if (next !== undefined) { index = next; render(); } else stop();
+}
+function stop() { clearInterval(timer); timer = null; $("play").textContent = "Play"; }
+function play() {
+  if (timer) return stop();
+  $("play").textContent = "Pause";
+  timer = setInterval(() => move(1), Number($("speed").value));
+}
+
+if (!window.DEMO) {
+  $("sub").innerHTML = '<span class="error">No data found. Run: python demo_adaptation_D/record.py</span>';
+} else {
+  const m = window.DEMO.meta;
+  $("sub").textContent = `${m.task.toUpperCase()} domain ${m.domain} (${m.dataset}), ${window.DEMO.steps.length} images in stream order, seed ${m.seed}. ` +
+    `Target starts from ${m.target}; learning rate ${m.learning_rate}; augmentation ${m.augmentation ? "on" : "off"}.`;
+  $("slider").max = String(window.DEMO.steps.length - 1);
+  rebuild();
+}
+$("slider").addEventListener("input", () => { index = Number($("slider").value); render(); });
+$("prev").addEventListener("click", () => move(-1));
+$("next").addEventListener("click", () => move(1));
+$("play").addEventListener("click", play);
+$("speed").addEventListener("change", () => { if (timer) { stop(); play(); } });
+$("filter").addEventListener("change", rebuild);
+$("outline").addEventListener("change", render);
+$("showBox").addEventListener("change", render);
+document.addEventListener("keydown", (e) => {
+  if (["SELECT", "INPUT"].includes(e.target.tagName) && e.target.type !== "checkbox") return;
+  if (e.key === "ArrowRight") move(1);
+  if (e.key === "ArrowLeft") move(-1);
+  if (e.key === " ") { e.preventDefault(); play(); }
+});
+</script>
+</body>
+</html>

@@ -138,3 +138,71 @@ class ResUnet34(nn.Module):
         output = self.up4(output, skips[0])
         output = self.up5(output)
         return self.seg_head(F.relu(self.bnout(output)))
+
+
+def NnUNet2D(num_classes: int = 3, image_size: int = 512) -> nn.Module:
+    """nnU-Net v2's 2D network as its default planner configures it for one patch size.
+
+    Features start at 32 and double per stage up to 512.  The encoder keeps
+    downsampling by 2 while the feature map stays at least 4 pixels wide and
+    divides evenly (seven poolings for 512 x 512, five for polyp's 352 x 352).  Each stage uses two 3x3 conv - InstanceNorm -
+    LeakyReLU blocks in both encoder and decoder.  Weights use nnU-Net's He
+    initialization.  Deep supervision is off: one full-resolution output.
+    """
+    from dynamic_network_architectures.architectures.unet import PlainConvUNet
+    from dynamic_network_architectures.initialization.weight_init import InitWeights_He
+
+    stages = 1
+    while image_size // 2 ** stages >= 4 and image_size % 2 ** stages == 0:
+        stages += 1
+    model = PlainConvUNet(
+        input_channels=3,
+        n_stages=stages,
+        features_per_stage=[min(32 * 2 ** stage, 512) for stage in range(stages)],
+        conv_op=nn.Conv2d,
+        kernel_sizes=3,
+        strides=[1] + [2] * (stages - 1),
+        n_conv_per_stage=2,
+        num_classes=num_classes,
+        n_conv_per_stage_decoder=2,
+        conv_bias=True,
+        norm_op=nn.InstanceNorm2d,
+        norm_op_kwargs={"eps": 1e-5, "affine": True},
+        nonlin=nn.LeakyReLU,
+        nonlin_kwargs={"inplace": True},
+        deep_supervision=False,
+    )
+    model.apply(InitWeights_He(1e-2))
+    return model
+
+
+def zscore(images: torch.Tensor) -> torch.Tensor:
+    """Per-image, per-channel z-score, nnU-Net's normalization for MRI."""
+    mean = images.mean(dim=(2, 3), keepdim=True)
+    std = images.std(dim=(2, 3), keepdim=True, unbiased=False)
+    return (images - mean) / std.clamp_min(1e-8)
+
+
+class ZScoreNnUNet2D(nn.Module):
+    """``NnUNet2D`` trained with nnU-Net's own recipe (``training/train_nnunet.py``).
+
+    The evaluation protocol feeds images min-max scaled to [0, 1].  A z-score does
+    not depend on that scaling, so the model normalizes its own input.
+    """
+
+    def __init__(self, num_classes: int = 3, image_size: int = 512) -> None:
+        super().__init__()
+        self.network = NnUNet2D(num_classes, image_size)
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return self.network(zscore(images))
+
+
+ARCHITECTURES = {"resunet34": ResUnet34, "nnunet": NnUNet2D, "nnunet_official": ZScoreNnUNet2D}
+
+
+def build_network(arch: str, num_classes: int, image_size: int) -> nn.Module:
+    """Untrained source/target network; nnU-Net's depth depends on the image size."""
+    if arch in ("nnunet", "nnunet_official"):
+        return ARCHITECTURES[arch](num_classes, image_size)
+    return ResUnet34(num_classes)

@@ -1,0 +1,6 @@
+prostate 0 exit=0
+prostate 1 exit=0
+odoc 0 exit=0
+prostate 2 exit=0
+odoc 1 exit=0
+odoc 2 exit=0

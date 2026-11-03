@@ -30,7 +30,13 @@ class StepDiagnostics:
 
 
 def structure_probabilities(class_probabilities: torch.Tensor) -> torch.Tensor:
-    """Convert [background, disc-rim, cup] into nested [OD, OC] probabilities."""
+    """Convert [background, disc-rim, cup] into nested [OD, OC] probabilities.
+
+    With two classes [background, prostate] the single structure is the
+    foreground probability.
+    """
+    if class_probabilities.shape[1] == 2:
+        return class_probabilities[:, 1:2].clamp(1e-6, 1.0 - 1e-6)
     disc = class_probabilities[:, 1] + class_probabilities[:, 2]
     cup = class_probabilities[:, 2]
     # Softmax channels can sum to 1 + a few ULPs, while CUDA BCE requires its
@@ -44,6 +50,15 @@ def largest_component(mask: np.ndarray) -> np.ndarray:
         return np.zeros_like(mask, dtype=bool)
     sizes = ndimage.sum(mask, components, range(1, count + 1))
     return components == int(np.argmax(sizes) + 1)
+
+
+def most_confident_component(mask: np.ndarray, probability: np.ndarray) -> np.ndarray:
+    """The connected region of the mask with the highest mean probability."""
+    components, count = ndimage.label(mask.astype(bool))
+    if count == 0:
+        return np.zeros_like(mask, dtype=bool)
+    means = ndimage.mean(probability, components, range(1, count + 1))
+    return components == int(np.argmax(means) + 1)
 
 
 def structure_aware_points(
@@ -76,8 +91,12 @@ def nested_foundation_classes(structure_probabilities_: torch.Tensor) -> torch.T
     """Map independent SAM OD/OC predictions to background/disc-rim/cup.
 
     The cup probability is constrained to lie inside the disc probability,
-    matching the benchmark's nested label convention.
+    matching the benchmark's nested label convention.  A single structure
+    (prostate) maps to [background, foreground].
     """
+    if structure_probabilities_.shape[1] == 1:
+        foreground = structure_probabilities_[:, 0].clamp(1e-6, 1.0 - 1e-6)
+        return torch.stack((1.0 - foreground, foreground), dim=1)
     disc = structure_probabilities_[:, 0].clamp(1e-6, 1.0 - 1e-6)
     cup = (structure_probabilities_[:, 1] * disc).clamp(1e-6, 1.0 - 1e-6)
     background = 1.0 - disc

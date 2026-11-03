@@ -1,0 +1,33 @@
+{
+  "rounds": [
+    {
+      "round": 1,
+      "domains": {
+        "B": 84.20603249693116,
+        "C": 84.52061286617558,
+        "D": 70.71652876525162,
+        "E": 78.99464775284012,
+        "F": 76.8021775051202
+      },
+      "mean_dsc": 79.04799987726373
+    }
+  ],
+  "config": {
+    "data": "data/prostate-6",
+    "domains": "['B', 'C', 'D', 'E', 'F']",
+    "image_size": "384",
+    "source_model": "/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/prostate_dinov3_vitl16_head_full_image_domain_A.pth",
+    "crop_model": "/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/prostate_domain_A_nnUNet2D_crop.pth",
+    "target_model": "/run/media/lqtrung/1tb-ssd/Model/ReDi-FM/prostate_domain_A_nnUNet2D_official.pth",
+    "dinov3_weights": "/run/media/lqtrung/1tb-ssd/Model/timm-vit_large_patch16_dinov3.lvd1689m",
+    "output": "results/crop_teach_tta/prostate_check",
+    "rounds": "1",
+    "max_images": "None",
+    "learning_rate": "2e-05",
+    "threshold": "0.5",
+    "crop_scale": "2.0",
+    "min_crop": "96",
+    "seed": "0",
+    "device": "cuda"
+  }
+}

@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+FileNotFoundError: [Errno 2] No such file or directory: '/home/lqtrung/code/python/ReDi-FM/.cache/loss_search/odoc/index.json'
+Traceback (most recent call last):
+FileNotFoundError: [Errno 2] No such file or directory: '/home/lqtrung/code/python/ReDi-FM/.cache/loss_search/odoc/index.json'
+Traceback (most recent call last):
+Traceback (most recent call last):
+prostate fused_soft seed0: dev=75.21 heldout=77.32 all=76.10 {'B': 82.9, 'C': 78.5, 'D': 67.2, 'E': 75.5, 'F': 76.6} 296s
+prostate fused_agree seed0: dev=77.03 heldout=76.50 all=76.76 {'B': 83.3, 'C': 80.0, 'D': 67.9, 'E': 76.5, 'F': 76.1} 296s
+odoc pixel_fused seed0: dev=76.93 heldout=77.22 all=77.07 {'B': 78.7, 'C': 81.5, 'D': 73.7, 'E': 74.4} 346s
+odoc pixel_agree_both seed0: dev=76.40 heldout=76.12 all=76.26 {'B': 79.4, 'C': 80.6, 'D': 70.4, 'E': 74.6} 346s
+prostate agree_both_soft seed0: dev=73.34 heldout=75.98 all=74.30 {'B': 82.9, 'C': 79.9, 'D': 63.2, 'E': 72.3, 'F': 73.3} 252s
+prostate agree_both_gate seed0: dev=76.11 heldout=76.68 all=76.35 {'B': 83.6, 'C': 79.5, 'D': 68.5, 'E': 76.1, 'F': 74.0} 251s
+prostate agree_both_half seed0: dev=76.53 heldout=76.53 all=76.63 {'B': 83.7, 'C': 80.8, 'D': 67.7, 'E': 75.2, 'F': 75.9} 302s
+prostate agree_both_zero seed0: dev=75.35 heldout=76.92 all=76.04 {'B': 83.3, 'C': 81.3, 'D': 69.1, 'E': 75.2, 'F': 71.3} 302s
+prostate fused_lr3e4 seed0: dev=72.06 heldout=73.10 all=72.40 {'B': 80.0, 'C': 77.6, 'D': 64.2, 'E': 70.1, 'F': 70.2} 303s
+prostate fused_lr5e5 seed0: dev=77.74 heldout=78.51 all=77.91 {'B': 84.4, 'C': 82.8, 'D': 66.9, 'E': 77.6, 'F': 78.0} 303s

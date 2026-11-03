@@ -1,0 +1,20 @@
+# PyTorch and torchvision with CUDA are not listed: they come preinstalled on
+# Kaggle, and locally they should be installed first for your CUDA version
+# (https://pytorch.org).  Tested with torch 2.14.1 and torchvision 0.29.1.
+numpy
+pillow
+scipy
+tqdm
+timm==1.0.30
+batchgenerators==0.25.5
+dynamic-network-architectures==0.4.4
+segment-anything @ git+https://github.com/facebookresearch/segment-anything.git@dca509fe793f601edb92606367a655c15ac00fdf
+mlflow==3.17.2
+# Downloads (src/download/).
+huggingface-hub>=0.36
+kaggle>=1.6
+gdown>=5
+nibabel>=5
+tifffile
+pyarrow
+# extras/medclip_samv2 only: transformers==4.35.2 scikit-learn scikit-image opencv-python-headless

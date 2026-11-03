@@ -41,8 +41,9 @@ def seed_everything(seed: int) -> None:
 
 
 def prepare_sample(sample: Sample, image_size: int) -> tuple[Image.Image, torch.Tensor]:
-    image, target = load_sample(sample)
-    image = image.resize((image_size, image_size), Image.Resampling.BILINEAR)
+    original, target = load_sample(sample)
+    image = original.resize((image_size, image_size), Image.Resampling.BILINEAR)
+    image.info["original"] = original  # For methods that crop from the full-size pixels.
     target_image = Image.fromarray(target).resize(
         (image_size, image_size), Image.Resampling.NEAREST
     )

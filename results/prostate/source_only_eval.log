@@ -1,0 +1,22 @@
+Checkpoint: /run/media/lqtrung/1tb-ssd/Model/ReDi-FM/prostate_domain_A_nnUNet2D.pth (nnunet)
+Device: cuda
+Protocol: Source Only (no parameter or BN-statistic updates)
+Task: prostate; metric: mean per-image DSC
+Domain B (BMC, n=384): Prostate=58.05
+Domain C (HK, n=158): Prostate=66.94
+Domain D (I2CVB, n=468): Prostate=23.15
+Domain E (RUNMC, n=421): Prostate=51.86
+Domain F (UCL, n=175): Prostate=39.28
+Do. A DSC (unweighted B/C/D/E/F domain mean): 47.86
+Saved: /home/lqtrung/code/python/ReDi-FM/results/nnunet_only/prostate_nnunet_only_domain_A.json
+Checkpoint: /run/media/lqtrung/1tb-ssd/Model/ReDi-FM/prostate_domain_A_ResUNet34.pth (resunet34)
+Device: cuda
+Protocol: Source Only (no parameter or BN-statistic updates)
+Task: prostate; metric: mean per-image DSC
+Domain B (BMC, n=384): Prostate=19.07
+Domain C (HK, n=158): Prostate=72.54
+Domain D (I2CVB, n=468): Prostate=9.60
+Domain E (RUNMC, n=421): Prostate=23.47
+Domain F (UCL, n=175): Prostate=7.75
+Do. A DSC (unweighted B/C/D/E/F domain mean): 26.49
+Saved: /home/lqtrung/code/python/ReDi-FM/results/source_only/prostate_baseline_no_adaptation_domain_A.json

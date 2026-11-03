@@ -2,11 +2,11 @@
 
 **Result (A → B, OD/OC, 3 seeds):** OD 81.99, OC 75.76, **Avg 78.88 ± 0.41**.
 
-For comparison, source-only gets 54.54 and the original ReDi-FM with SAM ViT-H gets 72.46. The protocol is identical to the SAM method (`src/redifm_sam/adapt.py`); both import it from `src/common/`.
+For comparison, source-only gets 54.54 and the original ReDi-FM with SAM ViT-H gets 72.46. The protocol is identical to the SAM method (`src/methods/redifm_sam.py`); both import it from `src/common/`.
 
 **Full stream B → C → D → E (Do. A, 3 seeds):** **77.55 ± 0.10**. The SAM version gets 71.72 here, and the paper reports 73.11. Per domain: B 78.88, C 77.61, D 79.22, E 74.49.
 
-Reproduce: `src/redifm_dinov3/scripts/run_dinov3_domain_B.sh` (B only) or `src/redifm_dinov3/scripts/run_dinov3_all_domains.sh` (full stream). Code: `src/redifm_dinov3/adapt.py` (method) and `src/redifm_dinov3/train_head.py` (one-off decoder training).
+Reproduce: `python src/evaluate.py --method redifm_dinov3 --domains B --seed 0` (B only) or `./reproduce.sh odoc` (full stream, 3 seeds). Code: `src/methods/redifm_dinov3.py` (method) and `src/training/train_dinov3_head.py` (one-off decoder training).
 
 ## 1. DINOv3 prediction pipeline (replaces Section 3.2 prompting and Eq. 5)
 
