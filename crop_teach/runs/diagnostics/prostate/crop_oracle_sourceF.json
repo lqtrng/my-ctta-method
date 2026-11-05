@@ -1,0 +1,60 @@
+{
+  "problem": "prostate",
+  "source": "F",
+  "method": "crop_oracle",
+  "seed": 0,
+  "stream": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E"
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "domains": {
+        "A": {
+          "prostate_dsc": 80.9569649599664,
+          "mean_dsc": 80.9569649599664,
+          "images": 261
+        },
+        "B": {
+          "prostate_dsc": 87.13386432140877,
+          "mean_dsc": 87.13386432140877,
+          "images": 384
+        },
+        "C": {
+          "prostate_dsc": 79.73269138802823,
+          "mean_dsc": 79.73269138802823,
+          "images": 158
+        },
+        "D": {
+          "prostate_dsc": 80.21081425342724,
+          "mean_dsc": 80.21081425342724,
+          "images": 468
+        },
+        "E": {
+          "prostate_dsc": 88.81740255755491,
+          "mean_dsc": 88.81740255755491,
+          "images": 421
+        }
+      },
+      "mean": {
+        "prostate_dsc": 83.3703474960771,
+        "mean_dsc": 83.3703474960771
+      }
+    }
+  ],
+  "do_dsc": 83.3703474960771,
+  "ms_per_image": 18.78532732068506,
+  "minutes": 0.5297462304433187,
+  "config": {
+    "learning_rate": 2e-05,
+    "pseudo_threshold": 0.5,
+    "entropy_threshold": 0.5,
+    "crop_scale": 2.0,
+    "min_crop": 96,
+    "max_images": null
+  }
+}

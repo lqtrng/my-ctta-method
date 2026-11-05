@@ -1,0 +1,72 @@
+{
+  "problem": "prostate",
+  "source": "F",
+  "method": "crop_teach",
+  "seed": 0,
+  "stream": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E"
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "domains": {
+        "A": {
+          "prostate_dsc": 64.654599850098,
+          "mean_dsc": 64.654599850098,
+          "head_alone_mean_dsc": 37.666314946561776,
+          "crop_teacher_mean_dsc": 56.55627589812981,
+          "images": 261
+        },
+        "B": {
+          "prostate_dsc": 82.83773170325972,
+          "mean_dsc": 82.83773170325972,
+          "head_alone_mean_dsc": 65.66926345889797,
+          "crop_teacher_mean_dsc": 80.37022370175055,
+          "images": 384
+        },
+        "C": {
+          "prostate_dsc": 78.87772799095126,
+          "mean_dsc": 78.87772799095126,
+          "head_alone_mean_dsc": 38.65813107494894,
+          "crop_teacher_mean_dsc": 65.65527540624326,
+          "images": 158
+        },
+        "D": {
+          "prostate_dsc": 76.04503617803677,
+          "mean_dsc": 76.04503617803677,
+          "head_alone_mean_dsc": 56.24533050440689,
+          "crop_teacher_mean_dsc": 66.35054098571969,
+          "images": 468
+        },
+        "E": {
+          "prostate_dsc": 82.13172784217011,
+          "mean_dsc": 82.13172784217011,
+          "head_alone_mean_dsc": 65.01767815066049,
+          "crop_teacher_mean_dsc": 78.54278732413286,
+          "images": 421
+        }
+      },
+      "mean": {
+        "prostate_dsc": 76.90936471290317,
+        "mean_dsc": 76.90936471290317,
+        "head_alone_mean_dsc": 52.651343627095216,
+        "crop_teacher_mean_dsc": 69.49502066319523
+      }
+    }
+  ],
+  "do_dsc": 76.90936471290317,
+  "ms_per_image": 356.8355043729146,
+  "minutes": 10.062761223316192,
+  "config": {
+    "learning_rate": 2e-05,
+    "pseudo_threshold": 0.5,
+    "entropy_threshold": 0.5,
+    "crop_scale": 2.0,
+    "min_crop": 96,
+    "max_images": null
+  }
+}

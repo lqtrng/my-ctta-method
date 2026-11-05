@@ -19,7 +19,28 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
+# SAM's image encoder can stand in for DINOv3 (--dinov3-arch sam_vit_h): its 256-channel
+# embedding on a 64 x 64 grid, from a fixed 1024 x 1024 input, feeds the same heads.
+SAM_ARCH = "sam_vit_h"
+SAM_PIXEL_MEAN = (123.675, 116.28, 103.53)
+SAM_PIXEL_STD = (58.395, 57.12, 57.375)
+
+
+def load_sam_encoder(device: torch.device) -> nn.Module:
+    from segment_anything import sam_model_registry
+
+    from common.paths import SAM_CHECKPOINT
+
+    sam = sam_model_registry["vit_h"](checkpoint=str(require_file(SAM_CHECKPOINT, "SAM ViT-H checkpoint")))
+    encoder = sam.image_encoder.requires_grad_(False).to(device=device, dtype=torch.bfloat16).eval()
+    encoder.embed_dim = 256  # Channels of its output embedding (the neck), for the heads.
+    encoder.is_sam = True
+    return encoder
+
+
 def load_dinov3(directory: Path, arch: str, device: torch.device) -> nn.Module:
+    if arch == SAM_ARCH:
+        return load_sam_encoder(device)
     import timm
 
     weights = require_file(dinov3_weights(directory, arch), "DINOv3 weights")
@@ -35,7 +56,20 @@ def load_dinov3(directory: Path, arch: str, device: torch.device) -> nn.Module:
 def dinov3_tokens(
     model: nn.Module, crops: torch.Tensor, layers: tuple[int, ...]
 ) -> torch.Tensor:
-    """Patch tokens of the requested blocks, concatenated along channels."""
+    """Patch tokens of the requested blocks, concatenated along channels.
+
+    For SAM's encoder: its output embedding (``layers`` is ignored); input must be 1024 x 1024.
+    """
+    if getattr(model, "is_sam", False):
+        if crops.shape[-2:] != (1024, 1024):
+            raise ValueError("SAM's image encoder needs a 1024 x 1024 input (--crop-resolution 1024)")
+        mean = crops.new_tensor(SAM_PIXEL_MEAN).view(1, 3, 1, 1)
+        std = crops.new_tensor(SAM_PIXEL_STD).view(1, 3, 1, 1)
+        inputs = ((crops * 255.0 - mean) / std).to(torch.bfloat16)
+        # One image at a time: SAM's global-attention blocks build a 4096 x 4096 attention map per
+        # head (~0.5 GB per image). The encoder is frozen, so the features are the same either way.
+        with torch.no_grad():
+            return torch.cat([model(inputs[index : index + 1]) for index in range(len(inputs))]).float()
     mean = crops.new_tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
     std = crops.new_tensor(IMAGENET_STD).view(1, 3, 1, 1)
     # DINOv3 overflows in float16; bfloat16 keeps the range of float32.
