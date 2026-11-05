@@ -13,10 +13,15 @@ The CNN is nnU-Net on prostate (``training/train_nnunet.py``) and ResUNet-34 on 
   --no-augmentation), one online update, and then
   predicts the original image; that prediction is what gets scored.
 
-The loss (``teacher_loss``), found with ``extras/loss_search/``, has three terms: the
-crop CNN's mask, DINOv3's mask scaled by how much the two agree on that structure, and
-distillation from the two teachers fused per pixel.  Batch-norm statistics stay frozen
-and the learning rate is low, which matters as much as the loss.
+The loss (``--loss``):
+
+* ``paper`` (default): ReDi-FM's own loss (Eqs. 6-16): the crop CNN's mask, DINOv3's mask
+  scaled by the consensus, and the hard class-balanced soft loss.
+* ``searched``: ``teacher_loss``, chosen in ``extras/loss_search/`` on labeled target images:
+  the crop CNN's mask, DINOv3's mask scaled by the agreement on each structure, and
+  distillation from the two teachers fused per pixel.  The earlier Crop-Teach results.
+
+Either way batch-norm statistics stay frozen and the learning rate is 2e-5.
 
     python src/evaluate.py --method redifm_dinov3_nnunet_crop [--task prostate] [--seed 0]
 """
@@ -24,6 +29,7 @@ and the learning rate is low, which matters as much as the loss.
 from __future__ import annotations
 
 import argparse
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -36,9 +42,11 @@ from torch import nn
 from common.dinov3 import SegmentationHead, dinov3_tokens, load_dinov3
 from common.models import build_network
 from common.paths import (
+    POLYP_NNUNET_SHARP_CROP_CHECKPOINT,
     POLYP_RESUNET_CROP_CHECKPOINT,
     PROSTATE_NNUNET_CROP_CHECKPOINT,
     RESUNET_CROP_CHECKPOINT,
+    RESUNET_SHARP_CROP_CHECKPOINT,
     SOURCE_CHECKPOINTS,
     require_file,
 )
@@ -46,6 +54,7 @@ from common.protocol import binary_dice_numpy, image_to_tensor, make_augmentatio
 from common.redifm import (
     confidence_weight,
     consensus_score,
+    hard_class_balanced_soft_loss,
     nested_foundation_classes,
     structure_probabilities,
     weighted_binary_segmentation_loss,
@@ -53,15 +62,20 @@ from common.redifm import (
 from common.tasks import Task
 from methods import redifm_dinov3
 from methods.redifm_dinov3 import PAPER_DO_A, DinoV3Segmenter  # noqa: F401  (PAPER_DO_A: read by evaluate.py)
-from methods.redifm_dinov3_dual import FULL_IMAGE_HEAD_CHECKPOINTS, load_full_image_network
+from methods.redifm_dinov3_dual import FULL_IMAGE_HEAD_CHECKPOINTS, FullImageNetwork, load_full_image_network
 
 
-# The CNN of each task, and its checkpoint trained on enlarged crops.
-FOUNDATION_ARCH = {"odoc": "resunet34", "prostate": "nnunet_official", "polyp": "resunet34"}
+# The CNN of each task (polyp: nnU, the only polyp CNN with a native-res crop model).
+FOUNDATION_ARCH = {"odoc": "resunet34", "prostate": "nnunet_official", "polyp": "nnunet_official"}
+# Crop-trained checkpoints by (task, CNN, --crop-from). "original" = native-res crops (the default);
+# prostate slices are already at native size, so its one crop model serves both.
 FOUNDATION_CHECKPOINTS = {
-    "odoc": RESUNET_CROP_CHECKPOINT,
-    "prostate": PROSTATE_NNUNET_CROP_CHECKPOINT,
-    "polyp": POLYP_RESUNET_CROP_CHECKPOINT,
+    ("odoc", "resunet34", "original"): RESUNET_SHARP_CROP_CHECKPOINT,
+    ("odoc", "resunet34", "resized"): RESUNET_CROP_CHECKPOINT,
+    ("prostate", "nnunet_official", "original"): PROSTATE_NNUNET_CROP_CHECKPOINT,
+    ("prostate", "nnunet_official", "resized"): PROSTATE_NNUNET_CROP_CHECKPOINT,
+    ("polyp", "nnunet_official", "original"): POLYP_NNUNET_SHARP_CROP_CHECKPOINT,
+    ("polyp", "resunet34", "resized"): POLYP_RESUNET_CROP_CHECKPOINT,
 }
 LEARNING_RATE = 2e-5
 
@@ -74,7 +88,10 @@ class NnUNetCropSegmenter:
     def __init__(self, args: argparse.Namespace, task: Task, device: torch.device) -> None:
         self.args = args
         arch = args.cnn or FOUNDATION_ARCH[task.name]
-        self.checkpoint = args.foundation_checkpoint or FOUNDATION_CHECKPOINTS[task.name]
+        key = (task.name, arch, getattr(args, "crop_from", "resized"))
+        if args.foundation_checkpoint is None and key not in FOUNDATION_CHECKPOINTS:
+            raise SystemExit(f"No crop model for {key}: train one, or pass --foundation-checkpoint")
+        self.checkpoint = args.foundation_checkpoint or FOUNDATION_CHECKPOINTS[key]
         model = build_network(arch, task.num_classes, args.image_size)
         model.load_state_dict(torch.load(require_file(self.checkpoint, "Crop checkpoint"),
                                          map_location="cpu", weights_only=True))
@@ -124,7 +141,9 @@ class NnUNetCropSegmenter:
         else:
             boxes = [self.crop_box(source_binary[0], source_soft[0])]
         full = image_to_tensor(image.info["original"], image_tensor.device) if self.args.crop_from == "original" else None
-        structures = structure_probabilities(crop_supervision(self, image_tensor, boxes, full))
+        merged = crop_supervision(self, image_tensor, boxes, full)
+        self.last_classes = merged  # The crop teacher's own prediction: argmax (background outside crops).
+        structures = structure_probabilities(merged)
         inside = torch.zeros_like(structures)
         for top, left, side in boxes:
             inside[:, :, top : top + side, left : left + side] = 1.0
@@ -207,6 +226,26 @@ def teacher_loss(
     return loss - (fused_classes * target_classes.clamp_min(1e-6).log()).sum(dim=1).mean()
 
 
+def paper_loss(
+    target_classes: torch.Tensor,
+    source_classes: torch.Tensor,
+    source: torch.Tensor,
+    source_masks: torch.Tensor,
+    foundation: torch.Tensor,
+    foundation_masks: torch.Tensor,
+    consensus: torch.Tensor,
+    entropy_threshold: float,
+) -> torch.Tensor:
+    """ReDi-FM's loss (Eqs. 6-16), with the crop CNN in SAM's place (``baseline`` in the loss search)."""
+    target = structure_probabilities(target_classes)
+    hard = weighted_binary_segmentation_loss(target, foundation_masks, confidence_weight(foundation))
+    hard = hard + consensus * weighted_binary_segmentation_loss(target, source_masks, confidence_weight(source))
+    soft = hard_class_balanced_soft_loss(
+        target_classes, source_classes, nested_foundation_classes(foundation), consensus, entropy_threshold
+    )
+    return hard + soft
+
+
 def fuse_teachers(source: torch.Tensor, foundation: torch.Tensor, consensus: torch.Tensor) -> torch.Tensor:
     """Both teachers per pixel, weighted by their confidence; DINOv3 also by the consensus."""
     foundation_weight = confidence_weight(foundation)
@@ -227,13 +266,16 @@ def adaptation_step(
     image_tensor: torch.Tensor,
     threshold: float,
     details: dict | None = None,
+    loss_name: str = "paper",
+    entropy_threshold: float = 0.5,
 ) -> tuple[float, dict[str, float]]:
     """The frozen teachers supervise one online update of the target model.
 
     ``details``, if given, receives the supervision of this step, for inspection.
     """
     with torch.inference_mode():
-        source = structure_probabilities(F.softmax(source_model(image_tensor), dim=1))
+        source_classes = F.softmax(source_model(image_tensor), dim=1)
+        source = structure_probabilities(source_classes)
         source_masks = source > threshold
     foundation_masks, foundation, foundation_diagnostics = segmenter.supervision(image, image_tensor, source, threshold)
     consensus = consensus_score(source_masks, foundation_masks).detach()
@@ -245,12 +287,17 @@ def adaptation_step(
     optimizer.zero_grad(set_to_none=True)
     augmented = image_tensor if augmentation is None else augmentation(image_tensor.squeeze(0)).unsqueeze(0)
     target_classes = F.softmax(target_model(augmented), dim=1)
-    loss = teacher_loss(target_classes, source, source_masks, foundation, foundation_masks, consensus)
+    if loss_name == "paper":
+        loss = paper_loss(target_classes, source_classes, source, source_masks, foundation, foundation_masks,
+                          consensus, entropy_threshold)
+    else:
+        loss = teacher_loss(target_classes, source, source_masks, foundation, foundation_masks, consensus)
     loss.backward()
     optimizer.step()
     if details is not None:
         details.update(
             augmented=augmented.detach(),
+            source_classes=source_classes,
             source=source,
             foundation=foundation,
             fused=fuse_teachers(source, foundation, consensus),
@@ -271,13 +318,20 @@ def add_arguments(parser: argparse._ArgumentGroup) -> None:
                         help="Default: the full-image DINOv3 head trained for --task")
     parser.add_argument("--foundation-checkpoint", type=Path,
                         help="Default: the crop-trained CNN of --task")
-    parser.add_argument("--crop-from", choices=("resized", "original"), default="resized",
-                        help="Cut the crop CNN's pixels from the resized image or the full-size one "
-                             "(original: use with a --foundation-checkpoint trained with --crop-from original)")
+    parser.add_argument("--crop-from", choices=("resized", "original"), default="original",
+                        help="Cut the crop CNN's pixels from the full-size image (native-res, the default) "
+                             "or the resized one (low-res); the default crop model matches it")
     parser.add_argument("--no-augmentation", action="store_true",
                         help="The target learns from the test image itself instead of an augmented copy")
+    parser.add_argument("--loss", choices=("paper", "searched"), default="paper",
+                        help="paper: ReDi-FM's loss; searched: teacher_loss from extras/loss_search "
+                             "(chosen on labeled target images; the earlier Crop-Teach results)")
+    parser.add_argument("--target", choices=("cnn", "dinov3_head"), default="cnn",
+                        help="What adapts: the whole-image CNN, or a copy of the full-image DINOv3 head "
+                             "on the same frozen DINOv3")
     parser.add_argument("--target-checkpoint", type=Path,
-                        help="Where the target CNN starts. Default: the whole-image domain-A CNN of --task")
+                        help="Where the target starts. Default: the whole-image domain-A CNN of --task "
+                             "(with --target dinov3_head: the --full-head-checkpoint)")
 
 
 def load_models(args: argparse.Namespace, task: Task) -> tuple:
@@ -286,16 +340,31 @@ def load_models(args: argparse.Namespace, task: Task) -> tuple:
     args.full_head_checkpoint = args.full_head_checkpoint or FULL_IMAGE_HEAD_CHECKPOINTS[task.name]
     args.learning_rate = args.learning_rate or LEARNING_RATE
     arch = args.cnn or FOUNDATION_ARCH[task.name]
-    target_checkpoint = args.target_checkpoint or SOURCE_CHECKPOINTS[(task.name, arch)]
-    # For the saved config: the source is the full-image head, the target a CNN.
+    if args.target == "dinov3_head":
+        target_checkpoint = args.target_checkpoint or args.full_head_checkpoint
+    else:
+        target_checkpoint = args.target_checkpoint or SOURCE_CHECKPOINTS[(task.name, arch)]
+    # For the saved config: the source is the full-image head; arch is the crop CNN.
     args.arch, args.source_checkpoint, args.target_checkpoint = arch, args.full_head_checkpoint, target_checkpoint
 
     backbone = load_dinov3(args.dinov3_dir, args.dinov3_arch, device)
     source_model = load_full_image_network(backbone, args.full_head_checkpoint, args.dinov3_arch)
     source_model.requires_grad_(False).to(device).eval()
-    target_model = build_network(arch, task.num_classes, args.image_size)
-    target_model.load_state_dict(torch.load(require_file(target_checkpoint, "Target checkpoint"),
-                                             map_location="cpu", weights_only=True))
+    if args.target == "dinov3_head":
+        # A trainable head on the same frozen DINOv3 (shared, not copied): by default a copy of
+        # the crop-placing head, or another full-image head given with --target-checkpoint.
+        if target_checkpoint == args.full_head_checkpoint:
+            head = copy.deepcopy(source_model.head)
+            target_model = FullImageNetwork(backbone, head, source_model.layers, source_model.resolution)
+        else:
+            target_model = load_full_image_network(backbone, target_checkpoint, args.dinov3_arch)
+        target_model.head.requires_grad_(True)
+        target_name = "DINOv3 full-image head"
+    else:
+        target_model = build_network(arch, task.num_classes, args.image_size)
+        target_model.load_state_dict(torch.load(require_file(target_checkpoint, "Target checkpoint"),
+                                                 map_location="cpu", weights_only=True))
+        target_name = arch
     target_model.to(device).train()
     segmenter = NnUNetCropSegmenter(args, task, device)
     optimizer = torch.optim.Adam(target_model.parameters(), lr=args.learning_rate)
@@ -303,7 +372,7 @@ def load_models(args: argparse.Namespace, task: Task) -> tuple:
     args.foundation_checkpoint = segmenter.checkpoint
     print(f"Crop placement: DINOv3 {args.dinov3_arch} + full-image head at {source_model.resolution} on {device}; "
           f"pseudo ground truth: {arch} on the crop ({segmenter.checkpoint.name}); "
-          f"target: {arch} ({target_checkpoint.name}), one online update per image")
+          f"target: {target_name} ({target_checkpoint.name}), one online update per image")
     return device, source_model, target_model, segmenter, optimizer, augmentation
 
 
@@ -312,10 +381,16 @@ def build(args: argparse.Namespace, task: Task):
 
     def segment(image: Image.Image) -> tuple[torch.Tensor, dict]:
         image_tensor = image_to_tensor(image, device)
+        details: dict = {}
         consensus, foundation = adaptation_step(
-            source_model, target_model, segmenter, optimizer, augmentation, image, image_tensor, args.pseudo_threshold
+            source_model, target_model, segmenter, optimizer, augmentation, image, image_tensor, args.pseudo_threshold,
+            details=details, loss_name=args.loss, entropy_threshold=args.entropy_threshold,
         )
         prediction = predict_after_update(target_model, image_tensor)[0]
-        return prediction, {"consensus": consensus, **foundation}
+        # Both frozen teachers' own predictions, scored as no-adaptation variants by evaluate.py:
+        # "head_alone" = dinov3_single, "crop_teacher" = dinov3_crop (same crops), at no extra cost.
+        teachers = {"head_alone": details["source_classes"].argmax(dim=1)[0],
+                    "crop_teacher": segmenter.last_classes.argmax(dim=1)[0]}
+        return prediction, {"consensus": consensus, **foundation, **teachers}
 
     return segment

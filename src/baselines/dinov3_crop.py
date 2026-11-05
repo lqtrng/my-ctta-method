@@ -30,6 +30,7 @@ from common.paths import (
     MODEL_DIR,
     POLYP_RESUNET_CROP_CHECKPOINT,
     RESUNET_CROP_CHECKPOINT,
+    RESUNET_SHARP_CROP_CHECKPOINT,
     require_file,
 )
 from common.protocol import image_to_tensor
@@ -39,7 +40,12 @@ from methods.redifm_dinov3 import DinoV3Segmenter
 from methods.redifm_dinov3_dual import FULL_IMAGE_HEAD_CHECKPOINTS, load_full_image_network
 
 
-CROP_CHECKPOINTS = {"odoc": RESUNET_CROP_CHECKPOINT, "polyp": POLYP_RESUNET_CROP_CHECKPOINT}
+# Crop-trained ResUNet-34 by (task, --crop-from); "original" = native-res crops, the default.
+CROP_CHECKPOINTS = {
+    ("odoc", "original"): RESUNET_SHARP_CROP_CHECKPOINT,
+    ("odoc", "resized"): RESUNET_CROP_CHECKPOINT,
+    ("polyp", "resized"): POLYP_RESUNET_CROP_CHECKPOINT,
+}
 
 
 class CropPlacer:
@@ -54,8 +60,9 @@ def add_arguments(parser: argparse._ArgumentGroup) -> None:
     parser.add_argument("--dinov3-arch", default=DINOV3_ARCH)
     parser.add_argument("--full-head-checkpoint", type=Path, help="Default: the full-image head of --task")
     parser.add_argument("--crop-checkpoint", type=Path, help="Default: the crop-trained ResUNet-34 of --task")
-    parser.add_argument("--crop-from", choices=("resized", "original"), default="resized",
-                        help="Cut the crop's pixels from the resized image or the original full-size one")
+    parser.add_argument("--crop-from", choices=("resized", "original"), default="original",
+                        help="Cut the crop's pixels from the full-size image (native-res, the default) "
+                             "or the resized one (low-res); the default crop model matches it")
     parser.add_argument("--pseudo-threshold", type=float, default=0.5)
     parser.add_argument("--crop-scale", type=float, default=2.0, help="Crop side as a multiple of the region")
     parser.add_argument("--min-crop", type=int, default=96)
@@ -66,7 +73,10 @@ def add_arguments(parser: argparse._ArgumentGroup) -> None:
 def build(args: argparse.Namespace, task: Task):
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     args.full_head_checkpoint = args.full_head_checkpoint or FULL_IMAGE_HEAD_CHECKPOINTS[task.name]
-    args.crop_checkpoint = args.crop_checkpoint or CROP_CHECKPOINTS[task.name]
+    key = (task.name, args.crop_from)
+    if args.crop_checkpoint is None and key not in CROP_CHECKPOINTS:
+        raise SystemExit(f"No crop ResUNet-34 for {key}: train one, or pass --crop-checkpoint")
+    args.crop_checkpoint = args.crop_checkpoint or CROP_CHECKPOINTS[key]
 
     backbone = load_dinov3(args.dinov3_dir, args.dinov3_arch, device)
     source_model = load_full_image_network(backbone, args.full_head_checkpoint, args.dinov3_arch)

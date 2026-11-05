@@ -1,0 +1,10 @@
+data/
+models/
+# Checkpoints, logs and MLflow stay local; the result tables are committed.
+runs/*
+!runs/results/
+!runs/diagnostics/
+runs_smoke/
+*.out
+*.tar
+__pycache__/
