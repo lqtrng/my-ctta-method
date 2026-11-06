@@ -96,17 +96,22 @@ def table_3(results: dict) -> list[str]:
     for problem in ("odoc", "prostate"):
         p = PAPER_T3[problem]
         lines.append(f"| {problem} | ReDi-FM (paper) | " + " | ".join(f"{v:.2f}" for v in p) + " |")
-        sources = list(PROBLEMS[problem].domains)
-        runs = [results.get((problem, "crop_teach", s, 3), []) for s in sources]
-        source_only = [results.get((problem, "source_only", s, 1), []) for s in sources]
-        if not all(runs) or not all(source_only):
+        # Sources with long-term runs (LONG_TERM may limit them); named in the row if not all.
+        sources = [s for s in PROBLEMS[problem].domains
+                   if results.get((problem, "crop_teach", s, 3)) and results.get((problem, "source_only", s, 1))]
+        if not sources:
             lines.append(f"| {problem} | Crop-Teach | – | – | – | – | – | – |")
             continue
+        runs = [results[(problem, "crop_teach", s, 3)] for s in sources]
+        source_only = [results[(problem, "source_only", s, 1)] for s in sources]
+        seeds = sorted({r["seed"] for per in runs for r in per})
+        label = "Crop-Teach" if len(sources) == len(PROBLEMS[problem].domains) else \
+            f"Crop-Teach (source {', '.join(sources)} only; seeds {', '.join(map(str, seeds))})"
         rounds = [float(np.mean([np.mean([r["rounds"][k]["mean"]["mean_dsc"] for r in per]) for per in runs]))
                   for k in range(3)]
         average = float(np.mean(rounds))
         gain = average - float(np.mean([per[0]["do_dsc"] for per in source_only]))
-        lines.append(f"| {problem} | Crop-Teach | " + " | ".join(f"{v:.2f}" for v in rounds)
+        lines.append(f"| {problem} | {label} | " + " | ".join(f"{v:.2f}" for v in rounds)
                      + f" | {average:.2f} | {gain:+.2f} | {rounds[0] - average:.2f} |")
     return lines + [""]
 

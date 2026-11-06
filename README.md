@@ -39,6 +39,45 @@
 | CI4 | DINOv3, all regions | R34 trained low-res, tested native-res | 35.10 (domain D only) | – | – |
 | CI5 | DINOv3, largest region | R34 trained low-res, tested native-res | 43.28 (domain D only) | – | – |
 
+### 4. Crop-Teach on the paper's protocol: prostate
+
+[crop_teach/](crop_teach/): each domain in turn is the source, the other five are the stream (A→B→…), 3 seeds. SAM ViT-H full-image head (1.25M) places the crops, R34 native-res crop model, R34 target, paper loss, lr 2e-5, frozen BN. Do. X = mean DSC over the five target domains.
+
+**Table 1: Do. X DSC (Crop-Teach: mean ± std over seeds 0, 1, 2)**
+
+| Method | Do. A | Do. B | Do. C | Do. D | Do. E | Do. F | Average |
+|---|---|---|---|---|---|---|---|
+| Source only (paper) | 51.02 | 58.79 | 26.88 | 24.15 | 60.42 | 53.33 | 45.77 |
+| ReDi-FM (paper) | 66.10 | 66.44 | 49.89 | 41.24 | 73.50 | 73.69 | 61.81 |
+| Source only (ours) | 65.17 | 67.88 | 63.96 | 35.54 | 71.96 | 72.90 | 62.90 |
+| **Crop-Teach** | **76.12 ± 0.10** | **78.54 ± 0.56** | **74.42 ± 0.27** | 39.24 ± 21.31 ⚠ | **77.93 ± 0.37** | **77.04 ± 0.14** | **70.55 ± 3.64** |
+| Crop-Teach, collapsed run excluded | 76.12 | 78.54 | 74.42 | 54.29 (seeds 0, 2) | 77.93 | 77.04 | 73.06 |
+
+Our source model is much stronger than the paper's (62.90 vs 45.77, from nnU-Net intensity augmentation), so the gain over source-only is smaller: +7.65 (paper +16.04).
+
+**⚠ Collapse: source D, seed 1 (Do. D 9.13; seeds 0 and 2: 55.65, 52.93).** In domain B, images 113–118 had near-empty teachers (on image 114 both the head and the crop teacher predicted no prostate, so the gate r = 1 and both hard terms pushed the target to all-background at full weight). From B image 117 the target predicts empty masks on every remaining image (C, E, F: 0.00), even when the crop teacher is good again (DSC 80–93). It never recovers because the hard loss clamps the target probability to [1e-6, 1 − 1e-6], which kills the gradient once the target saturates. The clamp is the same as in our ReDi-FM reproduction (`src/common/redifm.py`). Not fixed yet; candidate fixes: hard loss from logits, and skip the update when both teachers are empty. No collapse in the other 17 runs or in the long-term runs.
+
+**Teachers without adaptation (seed 0, Do. X)**
+
+| Source | Head alone | Crop teacher (head boxes) | Crop model on oracle boxes (ground truth) | Crop-Teach |
+|---|---|---|---|---|
+| A | 59.23 | 64.46 | 80.96 | 76.10 |
+| B | 65.06 | 68.18 | 80.43 | 79.29 |
+| C | 52.09 | 65.83 | 81.70 | 74.66 |
+| D | 35.16 | 43.72 | 52.81 | 55.65 |
+| E | 62.10 | 73.64 | 83.35 | 78.26 |
+| F | 52.65 | 69.50 | 83.37 | 76.91 |
+| Average | 54.38 | 64.22 | 77.10 | 73.48 |
+
+Oracle boxes are a diagnostic only (they read the labels). Box placement costs 12.9 points; the paper reports the same kind of error for box prompts (Figure 3).
+
+**Table 3: long-term, 3 rounds**
+
+| Method | Round 1 | Round 2 | Round 3 | Average | Gain | Degradation |
+|---|---|---|---|---|---|---|
+| ReDi-FM (paper, all sources) | 61.81 | 64.85 | 65.33 | 64.00 | +18.23 | −2.19 |
+| Crop-Teach (source C only, seeds 0, 1, 2) | 74.60 | 76.94 | 76.87 | 76.14 | +12.17 | −1.54 |
+
 ### OD/OC — targets B REFUGE · C ORIGA · D REFUGE val/test · E Drishti-GS
 
 **Adaptation**
