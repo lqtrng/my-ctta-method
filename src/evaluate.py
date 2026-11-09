@@ -124,7 +124,9 @@ def build_parser(method: str | None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--method", choices=list(METHODS), required=True)
     parser.add_argument("--task", choices=list(TASKS), default="odoc")
-    parser.add_argument("--domains", nargs="+", help="Target domains (default: every target of --task)")
+    parser.add_argument("--source-domain", default="A",
+                        help="Domain the source checkpoint was trained on; pass its --source-checkpoint")
+    parser.add_argument("--domains", nargs="+", help="Target domains (default: every other domain of --task)")
     parser.add_argument("--rounds", type=int, default=1, help="Passes over the target stream, never reset")
     parser.add_argument("--max-images", type=int, help="Limit images per domain for a smoke test")
     parser.add_argument("--image-size", type=int, help="Default: the task's (512 OD/OC, 384 prostate, 352 polyp)")
@@ -144,8 +146,11 @@ def parse_args() -> argparse.Namespace:
     method = pre.parse_known_args()[0].method
     args = build_parser(method).parse_args()
     task = TASKS[args.task]
-    args.domains = args.domains or list(task.target_domains)
-    unknown = set(args.domains) - set(task.target_domains)
+    all_domains = ["A", *task.target_domains]
+    if args.source_domain not in all_domains:
+        raise SystemExit(f"Task {task.name} has no domain {args.source_domain}")
+    args.domains = args.domains or [domain for domain in all_domains if domain != args.source_domain]
+    unknown = set(args.domains) - set(all_domains) | {args.source_domain} & set(args.domains)
     if unknown:
         raise SystemExit(f"Task {task.name} has no target domain(s) {sorted(unknown)}")
     if args.rounds < 1 or (args.max_images is not None and args.max_images < 1):
@@ -177,7 +182,7 @@ def main(args: argparse.Namespace) -> None:
             print(f"Do. A DSC (unweighted {'/'.join(args.domains)} domain mean): {do_a(summaries):.2f}")
 
         config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-        payload: dict[str, Any] = {"method": name, "task": task.name, "source_domain": "A", "config": config}
+        payload: dict[str, Any] = {"method": name, "task": task.name, "source_domain": args.source_domain, "config": config}
         summaries, per_image, variants = rounds[-1]
         if args.rounds == 1:
             payload["target_domains"] = summaries

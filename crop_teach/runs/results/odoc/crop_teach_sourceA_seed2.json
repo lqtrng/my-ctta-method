@@ -1,0 +1,69 @@
+{
+  "problem": "odoc",
+  "source": "A",
+  "method": "crop_teach",
+  "seed": 2,
+  "stream": [
+    "B",
+    "C",
+    "D",
+    "E"
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "domains": {
+        "B": {
+          "disc_dsc": 85.38607486741559,
+          "cup_dsc": 80.36356445791073,
+          "mean_dsc": 82.87481966266316,
+          "head_alone_mean_dsc": 72.52230092149577,
+          "crop_teacher_mean_dsc": 79.39669411029823,
+          "images": 400
+        },
+        "C": {
+          "disc_dsc": 92.0853340521352,
+          "cup_dsc": 79.36770994667647,
+          "mean_dsc": 85.72652199940582,
+          "head_alone_mean_dsc": 79.72510775736737,
+          "crop_teacher_mean_dsc": 78.67604732879077,
+          "images": 650
+        },
+        "D": {
+          "disc_dsc": 84.75758514259543,
+          "cup_dsc": 74.60553370578887,
+          "mean_dsc": 79.68155942419216,
+          "head_alone_mean_dsc": 65.76439644889105,
+          "crop_teacher_mean_dsc": 64.59091986278739,
+          "images": 800
+        },
+        "E": {
+          "disc_dsc": 89.66294263609231,
+          "cup_dsc": 73.19368181631958,
+          "mean_dsc": 81.42831222620595,
+          "head_alone_mean_dsc": 81.88851016251274,
+          "crop_teacher_mean_dsc": 75.99424544975841,
+          "images": 101
+        }
+      },
+      "mean": {
+        "disc_dsc": 87.97298417455963,
+        "cup_dsc": 76.8826224816739,
+        "mean_dsc": 82.42780332811677,
+        "head_alone_mean_dsc": 74.97507882256673,
+        "crop_teacher_mean_dsc": 74.66447668790869
+      }
+    }
+  ],
+  "do_dsc": 82.42780332811677,
+  "ms_per_image": 437.1641305457134,
+  "minutes": 14.215120311578115,
+  "config": {
+    "learning_rate": 2e-05,
+    "pseudo_threshold": 0.5,
+    "entropy_threshold": 0.5,
+    "crop_scale": 2.0,
+    "min_crop": 96,
+    "max_images": null
+  }
+}

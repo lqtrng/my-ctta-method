@@ -249,18 +249,35 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("invalid random-erasing scale interval")
 
 
+class ImageNetNormalize(nn.Module):
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        mean = images.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        std = images.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        return (images - mean) / std
+
+
+def load_source(path: Path, num_classes: int) -> nn.Module:
+    """ResUNet-34 from src/training/train_source.py (a plain state dict) or from
+    crop_teach/train.py ({"state_dict", ...}; it normalizes inputs with ImageNet statistics)."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    model = ResUnet34(num_classes=num_classes)
+    if "state_dict" not in checkpoint:
+        model.load_state_dict(checkpoint, strict=True)
+        return model
+    missing, unexpected = model.load_state_dict(checkpoint["state_dict"], strict=False)
+    assert not unexpected and set(missing) == {"res.fc.weight", "res.fc.bias"}, (missing, unexpected)
+    return nn.Sequential(ImageNetNormalize(), model)
+
+
 def build(args: argparse.Namespace, task: Task):
     args.source_checkpoint = (args.source_checkpoint or SOURCE_CHECKPOINTS[(task.name, "resunet34")]).resolve()
     args.device = args.device or "cpu"
     args.learning_rate = args.learning_rate if args.learning_rate is not None else task.learning_rate
     validate_args(args)
     device = torch.device(args.device)
-    state_dict = torch.load(args.source_checkpoint, map_location="cpu", weights_only=True, mmap=True)
-    source_model = ResUnet34(num_classes=task.num_classes)
-    source_model.load_state_dict(state_dict, strict=True)
+    source_model = load_source(args.source_checkpoint, task.num_classes)
     source_model.requires_grad_(False).to(torch.device(args.source_device)).eval()
-    target_model = ResUnet34(num_classes=task.num_classes)
-    target_model.load_state_dict(state_dict, strict=True)
+    target_model = load_source(args.source_checkpoint, task.num_classes)
     target_model.to(device).train()
     SamPredictor, sam_model_registry = require_sam()
     sam = sam_model_registry["vit_h"](checkpoint=str(args.sam_checkpoint.resolve()))
