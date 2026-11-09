@@ -78,6 +78,47 @@ Oracle boxes are a diagnostic only (they read the labels). Box placement costs 1
 | ReDi-FM (paper, all sources) | 61.81 | 64.85 | 65.33 | 64.00 | +18.23 | −2.19 |
 | Crop-Teach (source C only, seeds 0, 1, 2) | 74.60 | 76.94 | 76.87 | 76.14 | +12.17 | −1.54 |
 
+### 5. Crop-Teach on the paper's protocol: OD/OC
+
+[crop_teach/](crop_teach/): each domain in turn is the source, the other four are the stream (A→B→…), 3 seeds, one pass. SAM ViT-H full-image head (1.25M) places the crops, R34 native-res crop model, R34 target, paper loss, lr 2e-5, frozen BN. All R34 models are trained by `crop_teach/train.py` from ImageNet weights, on the full images of the source domain. ReDi-FM + SAM (ours) adapts the same R34 target with `src/evaluate.py --method redifm_sam --source-domain S --source-checkpoint crop_teach/runs/checkpoints/odoc/source_S_target.pth`. Do. X = mean DSC over the four target domains.
+
+**Table 1: Do. X DSC (ours: mean ± std over seeds 0, 1, 2)**
+
+| Method | Do. A | Do. B | Do. C | Do. D | Do. E | Average |
+|---|---|---|---|---|---|---|
+| Source only (paper) | 53.59 | 74.01 | 67.24 | 57.39 | 71.17 | 64.68 |
+| ReDi-FM (paper) | 73.11 | 75.69 | 73.31 | 73.48 | 72.37 | 73.59 |
+| Source only (ours) | 63.13 | 75.14 | 82.07 | 75.36 | 72.21 | 73.58 |
+| ReDi-FM + SAM (ours, same R34) | 63.77 ± 0.17 ⚠ | 72.85 ± 0.80 | 74.07 ± 0.39 | 72.75 ± 0.23 | 69.86 ± 0.73 | 70.66 ± 0.13 |
+| **Crop-Teach** | **82.52 ± 0.07** | **84.97 ± 0.05** | **84.68 ± 0.08** | **85.76 ± 0.16** | **83.00 ± 0.08** | **84.19 ± 0.04** |
+
+Crop-Teach: +10.61 over source only, +10.60 over the paper's ReDi-FM. With this stronger source model ReDi-FM + SAM is 2.92 *below* source only: it lowers OC on every target except A (mean over all source–target pairs: OD 81.03, OC 60.29; source only OD 77.22, OC 69.94; Crop-Teach OD 89.99, OC 78.39). With the paper-style R34 it was close to the paper (RF1: 71.73 vs 73.11).
+
+**⚠ ReDi-FM collapse: source A → domain D, every seed (OD 5.9, OC 61.6).** The source-A model already over-segments the disc on D (10–45% of the image vs 1.5–2% true; source-only OD 23.7). Its pseudo-label and SAM's points and candidate choice both follow that mask, so the target's OD collapses within ~20 images and never recovers. Crop-Teach on the same pair: OD 84.8.
+
+**Per target, mean over seeds 0, 1, 2 (OD / OC = mean)**
+
+| Source | A | B | C | D | E |
+|---|---|---|---|---|---|
+| A | – | 85.2 / 80.0 = 82.6 | 92.0 / 79.2 = 85.6 | 84.8 / 74.9 = 79.9 | 89.7 / 74.5 = 82.1 |
+| B | 84.2 / 63.8 = 74.0 | – | 90.1 / 84.1 = 87.1 | 95.0 / 85.9 = 90.5 | 96.3 / 80.5 = 88.4 |
+| C | 80.0 / 66.6 = 73.3 | 90.2 / 85.0 = 87.6 | – | 91.1 / 84.3 = 87.7 | 94.5 / 85.8 = 90.2 |
+| D | 82.4 / 68.4 = 75.4 | 94.3 / 85.2 = 89.8 | 91.7 / 85.3 = 88.5 | – | 96.7 / 82.1 = 89.4 |
+| E | 85.3 / 60.8 = 73.1 | 93.5 / 82.2 = 87.8 | 90.8 / 79.0 = 84.9 | 92.1 / 80.3 = 86.2 | – |
+
+**Teachers without adaptation (seed 0, Do. X)**
+
+| Source | Head alone | Crop teacher (head boxes) | Crop-Teach |
+|---|---|---|---|
+| A | 74.98 | 74.66 | 82.60 |
+| B | 73.98 | 83.62 | 85.03 |
+| C | 81.48 | 81.14 | 84.57 |
+| D | 83.20 | 83.75 | 85.97 |
+| E | 74.81 | 80.78 | 83.02 |
+| Average | 77.69 | 80.79 | 84.24 |
+
+Speed (RTX 5060, 8 GB): Crop-Teach 438 ms/image, source only 84 ms/image. The paper reports 345 ms/image for ReDi-FM on an RTX 3090 (polyp); our ReDi-FM + SAM runs took about 480 ms/image here.
+
 ### OD/OC — targets B REFUGE · C ORIGA · D REFUGE val/test · E Drishti-GS
 
 **Adaptation**

@@ -1,0 +1,59 @@
+{
+  "problem": "odoc",
+  "source": "C",
+  "method": "source_only",
+  "seed": 0,
+  "stream": [
+    "A",
+    "B",
+    "D",
+    "E"
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "domains": {
+        "A": {
+          "disc_dsc": 71.58868061512196,
+          "cup_dsc": 55.635309070234364,
+          "mean_dsc": 63.611994842678165,
+          "images": 159
+        },
+        "B": {
+          "disc_dsc": 89.40857594663976,
+          "cup_dsc": 81.62997558708557,
+          "mean_dsc": 85.51927576686266,
+          "images": 400
+        },
+        "D": {
+          "disc_dsc": 91.2027653288037,
+          "cup_dsc": 83.3942272036497,
+          "mean_dsc": 87.29849626622669,
+          "images": 800
+        },
+        "E": {
+          "disc_dsc": 95.12876217194346,
+          "cup_dsc": 88.57887037503853,
+          "mean_dsc": 91.85381627349096,
+          "images": 101
+        }
+      },
+      "mean": {
+        "disc_dsc": 86.83219601562723,
+        "cup_dsc": 77.30959555900205,
+        "mean_dsc": 82.07089578731461
+      }
+    }
+  ],
+  "do_dsc": 82.07089578731461,
+  "ms_per_image": 70.28606313548676,
+  "minutes": 1.710294202963511,
+  "config": {
+    "learning_rate": 2e-05,
+    "pseudo_threshold": 0.5,
+    "entropy_threshold": 0.5,
+    "crop_scale": 2.0,
+    "min_crop": 96,
+    "max_images": null
+  }
+}

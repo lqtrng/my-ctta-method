@@ -1,4 +1,4 @@
-"""Benchmark data: OD/OC (source A, target stream B-E), prostate MRI (domains A-F) and polyp (domains A-D)."""
+"""Benchmark data: OD/OC (domains A-E; source A, target stream B-E by default), prostate MRI (domains A-F) and polyp (domains A-D)."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-from common.paths import DATA_DIR, DRISHTI_ARCHIVE, POLYP_DIR, PROSTATE_DIR
+from common.paths import DATA_DIR, DOMAIN_A_DIR, DRISHTI_ARCHIVE, POLYP_DIR, PROSTATE_DIR
 
 
-EXPECTED_COUNTS = {"B": 400, "C": 650, "D": 800, "E": 101}
+EXPECTED_COUNTS = {"A": 159, "B": 400, "C": 650, "D": 800, "E": 101}
 # Six-site prostate MRI (0140.pdf, Section 4.1): slices that contain prostate,
 # 384 x 384, laid out by download/prepare_prostate.py.
 PROSTATE_SITES = {"A": "BIDMC", "B": "BMC", "C": "HK", "D": "I2CVB", "E": "RUNMC", "F": "UCL"}
@@ -90,6 +90,14 @@ def build_domains(selected: list[str], max_images: int | None) -> dict[str, list
     origa = DATA_DIR / "domain_C_ORIGA"
     refuge_target = DATA_DIR / "domain_D_REFUGE_val_test"
     all_domains = {
+        # RIM-ONE-r3, both splits: a target when another domain is the source.
+        "A": [
+            sample
+            for split in ("training", "testing")
+            for sample in pair_directories(
+                "A", "RIM-ONE-r3", DOMAIN_A_DIR / split / "images", DOMAIN_A_DIR / split / "masks"
+            )
+        ],
         "B": pair_directories(
             "B", "REFUGE", refuge_train / "Images", refuge_train / "Masks"
         ),
