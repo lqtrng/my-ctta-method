@@ -182,11 +182,11 @@ Speed (RTX 5060, 8 GB): Crop-Teach 438 ms/image, source only 84 ms/image. The pa
 
 | Run | Setting | B (OD / OC) |
 |---|---|---|
-| [exp01_default](results/redifm_dinov3/exp01_default.json) | training-free prototype teacher, seed 42 | 69.18 (76.68 / 61.69) |
-| [exp02_head](results/redifm_dinov3/exp02_head.json) | D3-crop head teacher, seed 42 | 78.50 (81.94 / 75.05) |
-| [exp03 seed 0](results/redifm_dinov3/exp03_head_seed0.json) · [1](results/redifm_dinov3/exp03_head_seed1.json) · [2](results/redifm_dinov3/exp03_head_seed2.json) | head, seeds 0, 1, 2 | 78.45 · 78.91 · 79.27 |
-| [exp04](results/redifm_dinov3/exp04_head_l11-17-23.json) | head on blocks 11, 17 and 23, seed 42 | 77.94 (81.51 / 74.37) |
-| [final B seed 0](results/redifm_dinov3/final_domain_B_seed0.json) · [1](results/redifm_dinov3/final_domain_B_seed1.json) · [2](results/redifm_dinov3/final_domain_B_seed2.json) | the final setting, B only | 78.45 · 78.91 · 79.27 |
+| [exp01_default](archive/results/redifm_dinov3/exp01_default.json) | training-free prototype teacher, seed 42 | 69.18 (76.68 / 61.69) |
+| [exp02_head](archive/results/redifm_dinov3/exp02_head.json) | D3-crop head teacher, seed 42 | 78.50 (81.94 / 75.05) |
+| [exp03 seed 0](archive/results/redifm_dinov3/exp03_head_seed0.json) · [1](archive/results/redifm_dinov3/exp03_head_seed1.json) · [2](archive/results/redifm_dinov3/exp03_head_seed2.json) | head, seeds 0, 1, 2 | 78.45 · 78.91 · 79.27 |
+| [exp04](archive/results/redifm_dinov3/exp04_head_l11-17-23.json) | head on blocks 11, 17 and 23, seed 42 | 77.94 (81.51 / 74.37) |
+| [final B seed 0](archive/results/redifm_dinov3/final_domain_B_seed0.json) · [1](archive/results/redifm_dinov3/final_domain_B_seed1.json) · [2](archive/results/redifm_dinov3/final_domain_B_seed2.json) | the final setting, B only | 78.45 · 78.91 · 79.27 |
 
 ### Prostate — targets B BMC · C HK · D I2CVB · E RUNMC · F UCL
 

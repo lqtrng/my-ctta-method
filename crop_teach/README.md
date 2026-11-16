@@ -11,13 +11,14 @@ ReDi-FM paper's (IJCAI-26) Tables 1–3 for Crop-Teach:
 
 For every target image, in stream order and never reset:
 
-1. **Crop placer.** A frozen DINOv3 ViT-L/16 with a full-image head, trained on the source,
+1. **Crop placer.** A frozen SAM ViT-H image encoder (or DINOv3 ViT-L/16 with `CT_BACKBONE=dinov3`)
+   with a full-image head, trained on the source,
    predicts the image. Every region of its mask gets a square crop, 2× the region's size.
 2. **Crop model.** A frozen CNN, trained on native-resolution source crops, predicts each crop.
    The crop is cut from the full-size image. The predictions are pasted back, with background
    outside the crops.
 3. **Target model.** The whole-image source CNN takes one Adam update (lr 2e-5, batch-norm
-   statistics frozen) with the paper's loss: crop teacher + gated DINOv3 teacher + hard
+   statistics frozen) with the paper's loss: crop teacher + gated full-image-head teacher + hard
    class-balanced soft term. It then predicts the image, and that prediction is scored.
 
 Networks follow the paper: ResUNet-34 for OD/OC and prostate, Segformer-B0 for polyp. Both start
@@ -32,7 +33,7 @@ domain S only. The queue trains all three kinds for every source domain (15 × 3
 |---|---|---|---|---|
 | `target` | Source-only model; the target that adapts | ResUNet-34 (OD/OC, prostate), Segformer-B0 (polyp), from ImageNet | The whole image, resized to 512 / 384 / 352 | 200 epochs, batch 8, Dice + CE, polynomial decay. ResUNet-34: SGD lr 1e-3 (momentum 0.99, Nesterov, wd 5e-4). Segformer-B0: AdamW lr 6e-5 (wd 0.01). Augmentation: rotation, scaling, elastic, mirroring, brightness, noise; prostate also nnU-Net's intensity transforms |
 | `crop` | Crop model: the teacher on each crop | Same network as `target` | Native-res crops (always; there is no low-res option, see below) | Same as `target` |
-| `head` | Crop placer and second teacher | Frozen DINOv3 ViT-L/16 + a head on block 23: 20M parameters (hidden 1024, the default) or the original 1.4M with `CT_HEAD_HIDDEN=256` | The whole image at 2× size: 1024 / 768 / 704 | 40 epochs, batch 8, AdamW lr 1e-3 one-cycle, Dice + CE, horizontal flip, ColorJitter(0.4, 0.4, 0.4, 0.08) |
+| `head` | Crop placer and second teacher | A head on a frozen backbone: SAM ViT-H's image encoder by default (1.25M-parameter head, hidden 256), or DINOv3 ViT-L/16 block 23 with `CT_BACKBONE=dinov3` (1.4M). `CT_HEAD_HIDDEN=1024` gives a 20M head | SAM: the whole image at 1024 × 1024. DINOv3: at 2× size, 1024 / 768 / 704 | 40 epochs, batch 8, AdamW lr 1e-3 one-cycle, Dice + CE, horizontal flip, ColorJitter(0.4, 0.4, 0.4, 0.08) |
 
 **Native-res crops.**
 - **Box:** for each training image, a square around the structure, 1.5–3× its extent, with the
@@ -53,7 +54,7 @@ once training finishes. An existing checkpoint is skipped unless `--force`.
 |---|---|
 | `config.py` | Paths (`CT_DATA`, `CT_MODELS`, `CT_RUNS`), the three problems, fixed settings |
 | `data.py` | Reads the prepared data; resize + per-image min-max normalization |
-| `networks.py` | ResUNet-34, Segformer-B0, frozen DINOv3 and its head |
+| `models.py` | The CNNs (ResUNet-34, Segformer-B0) and the full-image head on a frozen SAM ViT-H or DINOv3 |
 | `losses.py` | The paper's loss (Eqs. 6–16) |
 | `metrics.py` | Dice; S-alpha and max E-phi for polyp (checked against `py_sod_metrics`) |
 | `train.py` | Trains one model (`target`, `crop` or `head`) on one source domain |
@@ -87,3 +88,17 @@ once training finishes. An existing checkpoint is skipped unless `--force`.
 | CNN initialization | ImageNet | Avoids starting from a model that has seen another benchmark domain |
 | Segformer-B0 training | AdamW lr 6e-5 | The SegFormer default |
 | Stream for source X | All other domains, alphabetical | The paper's "fixed order (A→B→…)" |
+
+## Non-medical test: camouflaged objects (`cod`)
+
+The same method, unchanged, on natural images: one binary problem with three public benchmarks as
+domains (A CAMO 1250, B COD10K-test 2026, C NC4K 4121), with the polyp settings (Segformer-B0,
+352 px). Only `config.py` gains the `cod` entry; `prepare_cod.py` downloads the data (Hugging Face
+mirrors, nobg organization) and writes the usual layout, masks thresholded at 127 to 0/1.
+
+```bash
+python prepare_cod.py --raw <download cache> --out data/cod
+for kind in target crop head; do python train.py --problem cod --source A --kind $kind; done
+python adapt.py --problem cod --source A --method source_only
+python adapt.py --problem cod --source A --method crop_teach --seed 0
+```

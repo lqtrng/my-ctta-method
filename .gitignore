@@ -42,7 +42,7 @@ checkpoints/
 # Third-party papers (reference only)
 *.pdf
 
-# Temporary artifacts (results/ is tracked: experiment log, write-up, metrics)
+# Temporary artifacts (archive/results/ holds the old top-level results, tracked)
 tmp/
 output/
 logs/
