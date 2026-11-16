@@ -10,8 +10,8 @@ import torch.nn.functional as F
 from PIL import Image
 from torch import nn
 
-from models import Model
-from problem import Problem
+from modeling.models import Model
+from core.problem import Problem
 
 
 class TinyModel(Model):

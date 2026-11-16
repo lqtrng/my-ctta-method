@@ -1,7 +1,7 @@
 import torch
 
-from data_types import Region
-from fusion import MostForeground
+from core.data_types import Region
+from adaptation.fusion import MostForeground
 
 S = 32
 EMPTY = torch.empty(0)  # Fusion does not read the crop image.

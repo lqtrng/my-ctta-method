@@ -284,21 +284,46 @@ extends another.
 | `weights/imagenet/` | ResNet-34 and MiT-B0 ImageNet weights, for training later (not used now) |
 | `results/<problem>/<method>_source<S>.{json,csv}` | written by `run.py`: `source_only`, `sam_head`, `crop_teach_seed<k>` |
 
-Code (flat modules; run everything from this folder):
+Code (run everything from this folder; imports are `from <package>.<module> import ...`):
+
+```
+refactor_crop_teach/
+├── run.py                      # entry point; selects concrete components
+├── evaluation/
+│   └── evaluate.py             # combines adaptation, data and models
+├── adaptation/
+│   ├── adapting.py             # combines the adaptation components
+│   ├── learning.py
+│   ├── augmentation.py
+│   ├── region_proposal.py
+│   └── fusion.py
+├── modeling/
+│   └── models.py
+├── data/
+│   ├── data_loader.py          # next to the datasets (data/<problem>/)
+│   └── <problem>/domain_<letter>/...
+├── core/                       # shared definitions
+│   ├── problem.py
+│   └── data_types.py
+├── tests/
+│   ├── helpers.py
+│   └── test_*.py
+└── conftest.py
+```
 
 | File | Contents |
 |---|---|
-| `problem.py` | `Problem` (`ODOC`, `PROSTATE`), the paths, classes ↔ nested structures |
-| `data_types.py` | `TestImage`, `Region` |
-| `models.py` | `Model`, `ResUNet34`, `SamHead` |
-| `region_proposal.py` | `RegionProposal`, `PerRegionSquare`, `UnionSquare` |
-| `fusion.py` | `Fusion`, `MostForeground` |
-| `augmentation.py` | `Augmentation`, `JitterErase` |
-| `learning.py` | `Learning`, `CropTeachLearning` (the loss lives here) |
-| `data_loader.py` | `DataLoader`, `AlphabeticalStream`, `LongTermStream` |
-| `adapting.py` | `Adapting`; `Adapting.last` holds the last step's loss, consensus, crop count and the two teachers' predictions |
-| `evaluate.py` | `EvaluateAdapting`, `EvaluateNonAdapting`, `Result`, `score` |
 | `run.py` | `python run.py`: every problem and source, the three methods; skips results that exist |
+| `evaluation/evaluate.py` | `EvaluateAdapting`, `EvaluateNonAdapting`, `Result`, `score` |
+| `adaptation/adapting.py` | `Adapting`; `Adapting.last` holds the last step's loss, consensus, crop count and the two teachers' predictions |
+| `adaptation/learning.py` | `Learning`, `CropTeachLearning` (the loss lives here) |
+| `adaptation/augmentation.py` | `Augmentation`, `JitterErase` |
+| `adaptation/region_proposal.py` | `RegionProposal`, `PerRegionSquare`, `UnionSquare` |
+| `adaptation/fusion.py` | `Fusion`, `MostForeground` |
+| `modeling/models.py` | `Model`, `ResUNet34`, `SamHead` |
+| `data/data_loader.py` | `DataLoader`, `AlphabeticalStream`, `LongTermStream` |
+| `core/problem.py` | `Problem` (`ODOC`, `PROSTATE`), the paths, classes ↔ nested structures |
+| `core/data_types.py` | `TestImage`, `Region` |
 | `tests/` | `python -m pytest tests` |
 
 ## 5. Tests

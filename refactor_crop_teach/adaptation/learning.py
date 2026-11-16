@@ -13,9 +13,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from augmentation import Augmentation, JitterErase
-from models import Model
-from problem import nested_classes, structure_probabilities
+from adaptation.augmentation import Augmentation, JitterErase
+from modeling.models import Model
+from core.problem import nested_classes, structure_probabilities
 
 
 class Learning(ABC):

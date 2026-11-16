@@ -5,10 +5,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-import problem as problem_module
-from adapting import Adapting
-from data_loader import AlphabeticalStream, LongTermStream
-from evaluate import EvaluateAdapting, EvaluateNonAdapting, score
+import core.problem as problem_module
+from adaptation.adapting import Adapting
+from data.data_loader import AlphabeticalStream, LongTermStream
+from evaluation.evaluate import EvaluateAdapting, EvaluateNonAdapting, score
 from helpers import FixedModel, TinyModel, blob_probabilities, tiny_problem
 
 COUNTS = {"A": 2, "B": 3, "C": 2}

@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch import nn
 
-from models import Model, ResUNet34, SamHead
+from modeling.models import Model, ResUNet34, SamHead
 
 
 class FakeEncoder(nn.Module):

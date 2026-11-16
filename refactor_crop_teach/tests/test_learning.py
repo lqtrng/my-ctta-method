@@ -3,10 +3,10 @@ import copy
 import pytest
 import torch
 
-from augmentation import Augmentation
+from adaptation.augmentation import Augmentation
 from helpers import TinyModel, blob_probabilities
-from learning import CropTeachLearning, Learning
-from problem import structure_probabilities
+from adaptation.learning import CropTeachLearning, Learning
+from core.problem import structure_probabilities
 
 S = 32
 

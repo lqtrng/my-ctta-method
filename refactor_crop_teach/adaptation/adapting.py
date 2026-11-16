@@ -7,10 +7,10 @@ import random
 import numpy as np
 import torch
 
-from fusion import Fusion, MostForeground
-from learning import CropTeachLearning, Learning
-from models import Model
-from region_proposal import PerRegionSquare, RegionProposal
+from adaptation.fusion import Fusion, MostForeground
+from adaptation.learning import CropTeachLearning, Learning
+from modeling.models import Model
+from adaptation.region_proposal import PerRegionSquare, RegionProposal
 
 
 class Adapting:

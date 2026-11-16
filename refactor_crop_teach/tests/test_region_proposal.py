@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from helpers import blob_probabilities
-from region_proposal import PerRegionSquare, UnionSquare
+from adaptation.region_proposal import PerRegionSquare, UnionSquare
 
 S = 256
 

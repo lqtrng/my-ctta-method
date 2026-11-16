@@ -2,11 +2,11 @@ import copy
 
 import torch
 
-from adapting import Adapting
-from fusion import MostForeground
+from adaptation.adapting import Adapting
+from adaptation.fusion import MostForeground
 from helpers import FixedModel, TinyModel, blob_probabilities
-from learning import CropTeachLearning
-from region_proposal import PerRegionSquare, UnionSquare
+from adaptation.learning import CropTeachLearning
+from adaptation.region_proposal import PerRegionSquare, UnionSquare
 
 S = 128
 

@@ -3,9 +3,9 @@ import pytest
 import torch
 from PIL import Image
 
-import problem as problem_module
-from data_loader import AlphabeticalStream, DataLoader, LongTermStream
-from data_types import TestImage
+import core.problem as problem_module
+from data.data_loader import AlphabeticalStream, DataLoader, LongTermStream
+from core.data_types import TestImage
 from helpers import tiny_problem
 
 COUNTS = {"A": 2, "B": 3, "C": 1, "D": 2}

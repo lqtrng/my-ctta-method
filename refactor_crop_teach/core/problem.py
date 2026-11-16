@@ -11,7 +11,7 @@ from pathlib import Path
 
 import torch
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent
 DATA_DIR = HERE / "data"
 CHECKPOINT_DIR = HERE / "checkpoints"
 WEIGHTS_DIR = HERE / "weights"

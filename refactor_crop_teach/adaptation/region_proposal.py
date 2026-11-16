@@ -14,8 +14,8 @@ import torch
 import torch.nn.functional as F
 from scipy import ndimage
 
-from data_types import Region
-from problem import structure_probabilities
+from core.data_types import Region
+from core.problem import structure_probabilities
 
 
 class RegionProposal(ABC):

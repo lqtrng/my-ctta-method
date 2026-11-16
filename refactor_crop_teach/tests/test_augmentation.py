@@ -1,6 +1,6 @@
 import torch
 
-from augmentation import Augmentation, JitterErase
+from adaptation.augmentation import Augmentation, JitterErase
 
 
 def image() -> torch.Tensor:

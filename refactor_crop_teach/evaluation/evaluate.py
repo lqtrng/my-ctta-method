@@ -14,9 +14,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from adapting import Adapting
-from data_loader import DataLoader
-from models import Model
+from adaptation.adapting import Adapting
+from data.data_loader import DataLoader
+from modeling.models import Model
 
 
 def dice(prediction: torch.Tensor, label: torch.Tensor) -> float:

@@ -20,8 +20,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from data_types import TestImage
-from problem import Problem
+from core.data_types import TestImage
+from core.problem import Problem
 
 
 @dataclass(frozen=True)

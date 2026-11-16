@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from problem import WEIGHTS_DIR
+from core.problem import WEIGHTS_DIR
 
 
 class Model(nn.Module, ABC):

@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import torch
 
-from adapting import Adapting
-from data_loader import AlphabeticalStream
-from evaluate import EvaluateAdapting, EvaluateNonAdapting, Result
-from fusion import MostForeground
-from learning import CropTeachLearning
-from models import ResUNet34, SamHead
-from problem import ODOC, PROSTATE, RESULTS_DIR, Problem
-from region_proposal import PerRegionSquare
+from adaptation.adapting import Adapting
+from data.data_loader import AlphabeticalStream
+from evaluation.evaluate import EvaluateAdapting, EvaluateNonAdapting, Result
+from adaptation.fusion import MostForeground
+from adaptation.learning import CropTeachLearning
+from modeling.models import ResUNet34, SamHead
+from core.problem import ODOC, PROSTATE, RESULTS_DIR, Problem
+from adaptation.region_proposal import PerRegionSquare
 
 DEVICE = torch.device("cuda")
 PROBLEMS = (ODOC, PROSTATE)

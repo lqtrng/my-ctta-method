@@ -7,8 +7,8 @@ from abc import ABC, abstractmethod
 import torch
 import torch.nn.functional as F
 
-from data_types import Region
-from problem import structure_probabilities
+from core.data_types import Region
+from core.problem import structure_probabilities
 
 
 class Fusion(ABC):

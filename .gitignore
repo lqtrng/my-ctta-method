@@ -31,6 +31,10 @@ Thumbs.db
 
 # Large local datasets and model weights
 data/
+# refactor_crop_teach/data/ also holds code (data_loader.py) next to the datasets: keep its .py files.
+!refactor_crop_teach/data/
+refactor_crop_teach/data/*
+!refactor_crop_teach/data/*.py
 checkpoints/
 *.pth
 *.pt
