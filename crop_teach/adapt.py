@@ -4,19 +4,21 @@
     python adapt.py --problem odoc --source A --method source_only
     python adapt.py --problem odoc --source A --method crop_teach --seed 0
     python adapt.py --problem odoc --source A --method crop_teach --seed 0 --rounds 3   # long-term
+    python adapt.py --problem odoc --source A --method crop_teach --seed 0 --crop-strategy union
 
 Protocol (the ReDi-FM paper, Section 4): the target domains are all domains but the source, streamed
 in alphabetical order, one image at a time, never reset; with --rounds the whole stream repeats.
 A Crop-Teach step on each image:
-  1. the frozen DINOv3 full-image head (trained on the source) predicts the whole image; every
-     connected region of its first-structure mask gets a square crop, 2x the region's extent;
+  1. the frozen full-image head (trained on the source) predicts the whole image; every
+     connected region of its first-structure mask gets a square crop, 2x the region's extent
+     (crop strategy "per_region"), or all regions together get one crop ("union");
   2. the frozen crop model (trained on native-res source crops) predicts each crop cut from the
      full-size image; the predictions are pasted back, background outside the crops;
   3. the target model (the whole-image source CNN) takes one Adam update (lr 2e-5, batch-norm
      statistics frozen) on a color-jittered, randomly erased copy, with the paper's loss
      (losses.crop_teach_loss), then predicts the original image: the scored prediction.
 
-Writes runs/results/<problem>/<method>_source<S>[_seed<k>][_rounds<R>].json (skipped if it exists).
+Writes runs/results/<problem>/<method>_source<S>[_seed<k>][_rounds<R>][_union].json (skipped if it exists).
 """
 
 from __future__ import annotations
@@ -36,12 +38,12 @@ from torch import nn
 from torchvision.transforms import ColorJitter, RandomErasing
 
 import tracking
-from config import (CROP_SCALE, ENTROPY_THRESHOLD, ERASING, JITTER, LEARNING_RATE, MIN_CROP, PROBLEMS,
+from config import (CROP_SCALE, CROP_STRATEGIES, CROP_STRATEGY, ENTROPY_THRESHOLD, ERASING, JITTER, LEARNING_RATE, MIN_CROP, PROBLEMS,
                     PSEUDO_THRESHOLD, RESULTS_DIR, checkpoint_path)
 from data import domain_samples, test_sample, to_tensor
 from losses import crop_teach_loss, structure_probabilities
 from metrics import score
-from networks import build_network, load_backbone, load_head
+from models import build_network, load_backbone, load_head
 
 
 def load_cnn(path: Path, device: torch.device) -> nn.Module:
@@ -68,8 +70,9 @@ def crop_box(mask: np.ndarray, probability: np.ndarray) -> tuple[int, int, int]:
 
 
 class CropTeach:
-    def __init__(self, problem: str, source: str, device: torch.device) -> None:
+    def __init__(self, problem: str, source: str, device: torch.device, crop_strategy: str = CROP_STRATEGY) -> None:
         self.device = device
+        self.crop_strategy = crop_strategy
         backbone = load_backbone(device)
         self.head = load_head(checkpoint_path(problem, source, "head"), backbone).eval()
         self.crop_model = load_cnn(checkpoint_path(problem, source, "crop"), device).eval().requires_grad_(False)
@@ -83,7 +86,11 @@ class CropTeach:
         each pixel keeps the most foreground crop; outside the crops all classes are 0 (background)."""
         size = image.shape[-1]
         probability = source[0, 0].cpu().numpy()
-        components, count = ndimage.label(probability > PSEUDO_THRESHOLD)
+        mask = probability > PSEUDO_THRESHOLD
+        if self.crop_strategy == "union":  # All regions as one: a single box around the whole mask.
+            components, count = mask.astype(np.int32), int(mask.any())
+        else:
+            components, count = ndimage.label(mask)
         boxes = [crop_box(components == index, probability) for index in range(1, count + 1)]
         boxes = boxes or [crop_box(np.zeros_like(probability, dtype=bool), probability)]
         sy, sx = full.shape[-2] / size, full.shape[-1] / size
@@ -124,7 +131,7 @@ class CropTeach:
 
 
 class SourceOnly:
-    def __init__(self, problem: str, source: str, device: torch.device) -> None:
+    def __init__(self, problem: str, source: str, device: torch.device, crop_strategy: str = CROP_STRATEGY) -> None:
         self.target = load_cnn(checkpoint_path(problem, source, "target"), device)
 
     def __call__(self, image: torch.Tensor, full: torch.Tensor) -> tuple[torch.Tensor, dict]:
@@ -149,6 +156,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--rounds", type=int, default=1, help="Passes over the stream, never reset")
     parser.add_argument("--max-images", type=int, help="Per domain, for a smoke test")
+    parser.add_argument("--crop-strategy", choices=CROP_STRATEGIES, default=CROP_STRATEGY,
+                        help="per_region: one crop per region of the head's mask; union: one crop around all")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--force", action="store_true")
@@ -156,7 +165,9 @@ def main() -> None:
     problem = PROBLEMS[args.problem]
     seed_tag = "" if args.method == "source_only" else f"_seed{args.seed}"
     round_tag = f"_rounds{args.rounds}" if args.rounds > 1 else ""
-    output = args.output or RESULTS_DIR / args.problem / f"{args.method}_source{args.source}{seed_tag}{round_tag}.json"
+    strategy_tag = "_union" if args.method == "crop_teach" and args.crop_strategy == "union" else ""
+    output = args.output or RESULTS_DIR / args.problem / (
+        f"{args.method}_source{args.source}{seed_tag}{round_tag}{strategy_tag}.json")
     if output.exists() and not args.force:
         print(f"Exists, skipped: {output}")
         return
@@ -165,11 +176,11 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
-    method = METHODS[args.method](args.problem, args.source, device)
+    method = METHODS[args.method](args.problem, args.source, device, args.crop_strategy)
     stream = {domain: domain_samples(args.problem, domain, args.max_images) for domain in problem.stream(args.source)}
     polyp = args.problem == "polyp"
     print(f"{args.problem}: {args.method}, source {args.source}, stream {' -> '.join(stream)}, "
-          f"seed {args.seed}, {args.rounds} round(s)", flush=True)
+          f"seed {args.seed}, {args.rounds} round(s), crops {args.crop_strategy}", flush=True)
 
     rounds, rows = [], []
     start, images = time.time(), 0
@@ -206,7 +217,8 @@ def main() -> None:
                   "ms_per_image": 1000 * seconds / max(images, 1), "minutes": seconds / 60,
                   "config": {"learning_rate": 2e-5, "pseudo_threshold": PSEUDO_THRESHOLD,
                              "entropy_threshold": ENTROPY_THRESHOLD, "crop_scale": CROP_SCALE,
-                             "min_crop": MIN_CROP, "max_images": args.max_images}}
+                             "min_crop": MIN_CROP, "crop_strategy": args.crop_strategy,
+                             "max_images": args.max_images}}
         if args.rounds > 1:
             scores = [r["mean"]["mean_dsc"] for r in rounds]
             result.update(average_dsc=float(np.mean(scores)), degradation=scores[0] - float(np.mean(scores)))

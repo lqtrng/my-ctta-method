@@ -67,6 +67,13 @@ PROBLEMS = {
         {"A": 1000, "B": 612, "C": 196, "D": 1000},
         ("polyp",), 352, "segformer_b0", 704,
     ),
+    # Non-medical test of the unchanged method: camouflaged objects (prepare_cod.py), polyp settings.
+    "cod": Problem(
+        "cod",
+        {"A": "CAMO", "B": "COD10K-test", "C": "NC4K"},
+        {"A": 1250, "B": 2026, "C": 4121},
+        ("object",), 352, "segformer_b0", 704,
+    ),
 }
 
 
@@ -80,6 +87,10 @@ PSEUDO_THRESHOLD = 0.5       # tau in the paper
 ENTROPY_THRESHOLD = 0.5      # "high uncertainty" in the soft loss; not given by the paper
 CROP_SCALE = 2.0             # crop side = 2 x the region's extent
 MIN_CROP = 96                # smallest crop side, in pixels of the resized image
+# Crop strategy: "per_region" = one crop per connected region of the head's mask (the default);
+# "union" = one crop around all regions together, as the crop model's training boxes are.
+CROP_STRATEGY = os.environ.get("CT_CROP_STRATEGY", "per_region")
+CROP_STRATEGIES = ("per_region", "union")
 JITTER = dict(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05)
 ERASING = dict(p=0.5, scale=(0.02, 0.2), ratio=(0.3, 3.3), value="random")
 
@@ -89,7 +100,7 @@ TRAIN_CROP_SHIFT = 0.25
 
 
 def checkpoint_path(problem: str, source: str, kind: str) -> Path:
-    """kind: target (whole image), crop (native-res crops) or head (DINOv3 full-image head)."""
+    """kind: target (whole image), crop (native-res crops) or head (full-image head on the backbone)."""
     return CHECKPOINT_DIR / problem / f"source_{source}_{kind}.pth"
 
 

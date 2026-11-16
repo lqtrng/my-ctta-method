@@ -3,7 +3,7 @@
 
     python train.py --problem odoc --source A --kind target   # whole-image CNN: the source / target model
     python train.py --problem odoc --source A --kind crop     # CNN on native-res crops: the crop model
-    python train.py --problem odoc --source A --kind head     # DINOv3 full-image head: places the crops
+    python train.py --problem odoc --source A --kind head     # full-image head on SAM ViT-H: places the crops
 
 Writes runs/checkpoints/<problem>/source_<source>_<kind>.pth (skipped if it exists, unless --force).
 
@@ -15,9 +15,11 @@ Recipes:
   nnU-Net's intensity augmentation (MRI sites differ mostly in intensity).
 * crop: each image is a jittered square crop around the structure (1.5-3x its extent, center
   shifted by up to 0.25x), cut from the full-size image and resized to the input size.
-* head: frozen DINOv3 ViT-L/16, block 23 tokens, input 2x the image size, head of width
-  config.HEAD_HIDDEN (1024 = 20M parameters, the default; CT_HEAD_HIDDEN=256 gives the original 1.4M), batch 8, 40 epochs, AdamW lr 1e-3 with one-cycle schedule, horizontal flip and
-  color jitter (0.4, 0.4, 0.4, 0.08).
+* head: a small head on a frozen backbone (config.BACKBONE). Default: SAM ViT-H's image encoder,
+  input 1024 x 1024. With CT_BACKBONE=dinov3: DINOv3 ViT-L/16, block 23 tokens, input 2x the image
+  size. Head width config.HEAD_HIDDEN: 256 by default (1.25M parameters on SAM, 1.4M on DINOv3);
+  CT_HEAD_HIDDEN=1024 gives 20M. Batch 8, 40 epochs, AdamW lr 1e-3 with one-cycle schedule,
+  horizontal flip and color jitter (0.4, 0.4, 0.4, 0.08).
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ import tracking
 from config import BACKBONE, HEAD_HIDDEN, PROBLEMS, TRAIN_CROP_SCALE, TRAIN_CROP_SHIFT, checkpoint_path, head_resolution
 from data import SourceDataset
 from losses import structure_probabilities
-from networks import SegmentationHead, backbone_tokens, build_network, load_backbone
+from models import SegmentationHead, backbone_tokens, build_network, load_backbone
 
 
 def seed_everything(seed: int) -> None:
@@ -171,7 +173,7 @@ def train_cnn(args: argparse.Namespace, output: Path, device: torch.device) -> N
                   "kind": args.kind, "source": args.source, "problem": args.problem})
 
 
-# --- DINOv3 full-image head ----------------------------------------------------------------
+# --- Full-image head on the frozen backbone (SAM ViT-H or DINOv3) ---------------------------
 
 
 def train_head(args: argparse.Namespace, output: Path, device: torch.device) -> None:
