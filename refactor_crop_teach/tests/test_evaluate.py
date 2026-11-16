@@ -63,7 +63,7 @@ def test_evaluate_adapting_never_passes_the_label_to_adapting(tiny):
 def test_evaluate_adapting_scores_per_image_per_domain_and_per_round(tiny):
     torch.manual_seed(0)
     full_model = FixedModel(blob_probabilities(S, [(20, 20, 30, 30)], 3))
-    adapting = Adapting(full_model, TinyModel(3), TinyModel(3))
+    adapting = Adapting(full_model, TinyModel(3), TinyModel(3), seed=4)
     result = EvaluateAdapting(LongTermStream(tiny, "B", "cpu"), adapting).run()
     assert len(result.rows) == 3 * 4
     assert [row["round"] for row in result.rows] == [1] * 4 + [2] * 4 + [3] * 4
@@ -77,12 +77,12 @@ def test_evaluate_adapting_scores_per_image_per_domain_and_per_round(tiny):
     assert first["mean"]["mean_dsc"] == pytest.approx((first["domains"]["A"]["mean_dsc"] + first["domains"]["C"]["mean_dsc"]) / 2)
     assert result.do_dsc == first["mean"]["mean_dsc"]
     summary = result.to_dict()
-    assert summary["stream"] == ["A", "C"] and summary["seed"] == 0 and "degradation" in summary
+    assert summary["stream"] == ["A", "C"] and summary["seed"] == 4 and "degradation" in summary
 
 
 def test_evaluate_adapting_is_repeatable(tiny):
     def run() -> list[dict]:
-        torch.manual_seed(123)  # the same initial models; run() then seeds the augmentation itself
+        torch.manual_seed(123)  # the same initial models; Adapting then seeds its own draws
         full_model = FixedModel(blob_probabilities(S, [(20, 20, 30, 30)], 3))
         return EvaluateAdapting(AlphabeticalStream(tiny, "B", "cpu"), Adapting(full_model, TinyModel(3), TinyModel(3))).run().rows
 

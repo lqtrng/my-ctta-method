@@ -66,6 +66,23 @@ def test_the_two_teachers_are_frozen():
         assert all(torch.equal(value, state[key]) for key, value in model.state_dict().items())
 
 
+def stream(seed: int) -> list[torch.Tensor]:
+    """Predictions on a fixed three-image stream, from the same initial models."""
+    generator = torch.Generator().manual_seed(7)
+    images = [torch.rand(1, 3, S, S, generator=generator) for _ in range(3)]
+    torch.manual_seed(99)                      # the same initial target model every time
+    target = TinyModel(2)
+    adapting = build(target, seed=seed)
+    return [adapting(image, image) for image in images]
+
+
+def test_the_seed_fixes_the_random_draws_of_the_stream():
+    assert build().seed == 0 and build(seed=3).seed == 3
+    first, again, other = stream(1), stream(1), stream(2)
+    assert all(torch.equal(a, b) for a, b in zip(first, again))
+    assert not all(torch.equal(a, b) for a, b in zip(first, other))
+
+
 def test_a_strategy_can_be_swapped():
     torch.manual_seed(0)
     adapting = build(region_proposal=UnionSquare())

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+
+import numpy as np
 import torch
 
 from fusion import Fusion, MostForeground
@@ -15,11 +18,16 @@ class Adapting:
 
     The three models, the strategies and the optimizer state are kept across the whole stream;
     nothing is ever reset. It sees ``image`` and ``full`` only, never the label.
+    ``seed`` is set once, here at the start, and never again.
     """
 
     def __init__(self, full_model: Model, crop_model: Model, target_model: Model,
                  region_proposal: RegionProposal | None = None, fusion: Fusion | None = None,
-                 learning: Learning | None = None) -> None:
+                 learning: Learning | None = None, seed: int = 0) -> None:
+        self.seed = seed
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
         self.full_model = full_model.requires_grad_(False).eval()
         self.crop_model = crop_model.requires_grad_(False).eval()
         self.target_model = target_model
