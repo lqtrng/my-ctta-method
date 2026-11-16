@@ -4,7 +4,8 @@ Crop-Teach, on the stream below. No arguments; change the constants or swap a co
 
     python run.py
 
-Writes results/<problem>/<method>_source<S>.{json,csv}; an evaluation whose JSON exists is skipped.
+Writes results/<problem>/<method>_source<S>.{json,csv}, where <method> is source_only, sam_head or
+crop_teach_seed<k>; an evaluation whose JSON exists is skipped.
 """
 
 from __future__ import annotations
@@ -22,12 +23,13 @@ from region_proposal import PerRegionSquare
 
 DEVICE = torch.device("cuda")
 PROBLEMS = (ODOC, PROSTATE)
+SEEDS = (0,)                         # one Crop-Teach run per seed
 STREAM = AlphabeticalStream          # or LongTermStream; its name goes into the result file's name
 TAG = "" if STREAM is AlphabeticalStream else f"_{STREAM.__name__}"
 
 
 def evaluations(problem: Problem, source: str, encoder: torch.nn.Module) -> dict:
-    """method name -> a function building its evaluator (built only if the result is missing)."""
+    """result name -> a function building its evaluator (built only if the result is missing)."""
     classes = problem.num_classes
     loader = STREAM(problem, source, DEVICE)
 
@@ -37,12 +39,15 @@ def evaluations(problem: Problem, source: str, encoder: torch.nn.Module) -> dict
     def sam_head() -> SamHead:
         return SamHead(classes, encoder).load(problem.checkpoint(source, "head")).to(DEVICE)
 
+    def crop_teach(seed: int) -> EvaluateAdapting:
+        return EvaluateAdapting(loader, Adapting(
+            full_model=sam_head(), crop_model=resunet("crop"), target_model=resunet("target"),
+            region_proposal=PerRegionSquare(), fusion=MostForeground(), learning=CropTeachLearning(), seed=seed))
+
     return {
         "source_only": lambda: EvaluateNonAdapting(loader, resunet("target"), "source_only"),
         "sam_head": lambda: EvaluateNonAdapting(loader, sam_head(), "sam_head"),
-        "crop_teach": lambda: EvaluateAdapting(loader, Adapting(
-            full_model=sam_head(), crop_model=resunet("crop"), target_model=resunet("target"),
-            region_proposal=PerRegionSquare(), fusion=MostForeground(), learning=CropTeachLearning())),
+        **{f"crop_teach_seed{seed}": lambda seed=seed: crop_teach(seed) for seed in SEEDS},
     }
 
 

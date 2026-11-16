@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import csv
 import json
-import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,20 +82,15 @@ class Result:
 class EvaluateAdapting:
     """DataLoader -> Adapting -> score. Adapting gets ``image`` and ``full`` only, never ``label``."""
 
-    SEED = 0   # for the augmentation's random draws
-
     def __init__(self, loader: DataLoader, adapting: Adapting, method: str = "crop_teach") -> None:
         self.loader = loader
         self.adapting = adapting
         self.method = method
 
     def run(self) -> Result:
-        random.seed(self.SEED)
-        np.random.seed(self.SEED)
-        torch.manual_seed(self.SEED)
         structures = self.loader.problem.structures
         result = Result({"problem": self.loader.problem.name, "source": self.loader.source, "method": self.method,
-                         "seed": self.SEED, "stream": self.loader.domains()})
+                         "seed": getattr(self.adapting, "seed", None), "stream": self.loader.domains()})
         start = time.time()
         for test_image in self.loader:
             prediction = self.adapting(test_image.image, test_image.full)

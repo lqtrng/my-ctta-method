@@ -8,7 +8,8 @@ Scope:
 - OD/OC and prostate (ResUNet-34); no SegFormer, so no polyp or COD;
 - no DINOv3;
 - no command-line arguments: settings are constants inside the class that uses them. Anything
-  that varies becomes a new subclass of an interface.
+  that varies becomes a new subclass of an interface. Exceptions, passed as constructor
+  arguments: the problem and source domain, and the seed, which is given to `Adapting`.
 
 `S` below is the problem's image size: 512 for OD/OC, 384 for prostate. It is not a fixed 512.
 
@@ -57,7 +58,8 @@ Scope:
 ```
 
 - `Adapting` owns steps [2] to [7] for one image. It keeps the three models, the strategies and
-  the optimizer state across the whole stream; it is never reset.
+  the optimizer state across the whole stream; it is never reset. Its `seed` argument is set
+  once, when `Adapting` is created, and never again.
 - `EvaluateAdapting` runs [1] → `Adapting` → [8]. It passes only `image` and `full` to
   `Adapting`, never `label`.
 - `EvaluateNonAdapting` runs [1] → one frozen Model → [8]: source only (target ResUNet34) and
@@ -280,7 +282,7 @@ extends another.
 | `checkpoints/<problem>/source_<S>_{head,crop,target}.pth` | trained models, copied from `crop_teach/runs/checkpoints/` |
 | `weights/sam_vit_h_4b8939.pth` | SAM ViT-H image encoder weights |
 | `weights/imagenet/` | ResNet-34 and MiT-B0 ImageNet weights, for training later (not used now) |
-| `results/<problem>/<method>_source<S>.{json,csv}` | written by `run.py`: `source_only`, `sam_head`, `crop_teach` |
+| `results/<problem>/<method>_source<S>.{json,csv}` | written by `run.py`: `source_only`, `sam_head`, `crop_teach_seed<k>` |
 
 Code (flat modules; run everything from this folder):
 
