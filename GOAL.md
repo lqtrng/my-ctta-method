@@ -17,8 +17,8 @@ An evaluate_adapting class orchestrate subclass of DataLoader and Adapting to sc
 
 ---------
 Move everything outside crop_teach to an archive folder except for the README.md and two
-Make a seperate refactor_crop_teach folder
+Make a seperate and independent refactor_crop_teach folder
 For now no need to worry about Training
-For now hard code the argument and just choose the interface components that suits current code.
 Forget about DinoV3 completely
 Every class that implement an interface must have unit test
+Remember to test the refactor by comparing some output of before and after refactor.
