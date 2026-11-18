@@ -1,0 +1,10 @@
+data/
+models/
+runs/*
+!runs/results/
+!runs/diagnostics/
+runs_smoke/
+*.out
+*.tar
+__pycache__/
+.pytest_cache/
