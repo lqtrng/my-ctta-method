@@ -290,7 +290,7 @@ Code (run everything from this folder; imports are `from <package>.<module> impo
 refactor_crop_teach/
 ├── run.py                      # entry point; selects concrete components
 ├── evaluation/
-│   └── evaluate.py             # combines adaptation, data and models
+│   └── evaluate.py             # combines adaptation, data and models; logs scores to the active MLflow run
 ├── adaptation/
 │   ├── adapting.py             # combines the adaptation components
 │   ├── learning.py
@@ -315,7 +315,7 @@ refactor_crop_teach/
 |---|---|
 | `run.py` | `python run.py`: every problem and source, the three methods; skips results that exist |
 | `evaluation/evaluate.py` | `EvaluateAdapting`, `EvaluateNonAdapting`, `Result`, `score` |
-| `adaptation/adapting.py` | `Adapting`; `Adapting.last` holds the last step's loss, consensus, crop count and the two teachers' predictions |
+| `adaptation/adapting.py` | `Adapting`; `Adapting.last` holds the last step's loss, consensus and crop count |
 | `adaptation/learning.py` | `Learning`, `CropTeachLearning` (the loss lives here) |
 | `adaptation/augmentation.py` | `Augmentation`, `JitterErase` |
 | `adaptation/region_proposal.py` | `RegionProposal`, `PerRegionSquare`, `UnionSquare` |

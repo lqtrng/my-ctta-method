@@ -34,9 +34,8 @@ def test_one_step_runs_the_pipeline_and_returns_the_clean_prediction():
     # [2] the full-image model saw the stretched image; [4] the crop model saw one S x S crop per region.
     assert len(adapting.full_model.seen) == 1 and adapting.full_model.seen[0] is image
     assert [tuple(crop.shape) for crop in adapting.crop_model.seen] == [(1, 3, S, S)] * 2
-    assert adapting.last["crops"] == 2 and adapting.last["loss"] > 0 and 0 <= adapting.last["consensus"] <= 1
-    assert adapting.last["teachers"]["head_alone"].shape == (2, S, S)
-    assert adapting.last["teachers"]["crop_teacher"].shape == (2, S, S)
+    assert adapting.last == {"crops": 2, "loss": adapting.last["loss"], "consensus": adapting.last["consensus"]}
+    assert adapting.last["loss"] > 0 and 0 <= adapting.last["consensus"] <= 1
     # [7] the prediction is the updated target model's, on the clean image, in eval mode.
     assert not adapting.target_model.training
     with torch.no_grad():

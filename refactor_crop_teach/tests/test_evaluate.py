@@ -67,8 +67,7 @@ def test_evaluate_adapting_scores_per_image_per_domain_and_per_round(tiny):
     result = EvaluateAdapting(LongTermStream(tiny, "B", "cpu"), adapting).run()
     assert len(result.rows) == 3 * 4
     assert [row["round"] for row in result.rows] == [1] * 4 + [2] * 4 + [3] * 4
-    assert {"disc_dsc", "cup_dsc", "mean_dsc", "head_alone_mean_dsc", "crop_teacher_mean_dsc", "loss",
-            "consensus", "crops", "domain", "image", "round"} == set(result.rows[0])
+    assert {"disc_dsc", "cup_dsc", "mean_dsc", "loss", "consensus", "crops", "domain", "image", "round"} == set(result.rows[0])
     assert [entry["round"] for entry in result.rounds] == [1, 2, 3]
     first = result.rounds[0]
     assert list(first["domains"]) == ["A", "C"] and first["domains"]["A"]["images"] == 2

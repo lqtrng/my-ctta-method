@@ -1,6 +1,11 @@
 """The evaluation layer: run a DataLoader through a model and score it.
 
 score(prediction, label) -> per image -> per domain -> per round -> Result (JSON / CSV).
+
+The evaluators log into the active MLflow run (run.py opens it):
+params for what was run; each image's scores as it is scored (step = position in the stream);
+domain/<key>, one point per domain as it finishes (step = the domain's position in the stream);
+the per-round and per-domain summary at the end, and the summary JSON as an artifact.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import mlflow
 import numpy as np
 import torch
 
@@ -68,6 +74,17 @@ class Result:
             result.update(average_dsc=float(np.mean(scores)), degradation=scores[0] - float(np.mean(scores)))
         return result
 
+    def metrics(self) -> dict[str, float]:
+        """The summary flattened to name -> number: do_dsc, ms_per_image, ..., and round<r>/<domain or mean>/<key>."""
+        summary = self.to_dict()
+        flat = {key: summary[key] for key in ("do_dsc", "ms_per_image", "minutes", "average_dsc", "degradation")
+                if key in summary}
+        for entry in self.rounds:
+            flat.update({f"round{entry['round']}/mean/{key}": value for key, value in entry["mean"].items()})
+            for domain, scores in entry["domains"].items():
+                flat.update({f"round{entry['round']}/{domain}/{key}": value for key, value in scores.items()})
+        return flat
+
     def save(self, path: Path) -> None:
         """Writes <path>.json (the summary) and <path>.csv (one row per image)."""
         path = Path(path)
@@ -79,8 +96,14 @@ class Result:
             writer.writerows(self.rows)
 
 
+def domain_point(rows: list[dict]) -> dict[str, float]:
+    """The mean of every _dsc score over one domain's images (x100), as domain/<key>."""
+    return {f"domain/{key}": 100 * float(np.mean([row[key] for row in rows])) for key in rows[0] if key.endswith("_dsc")}
+
+
 class EvaluateAdapting:
-    """DataLoader -> Adapting -> score. Adapting gets ``image`` and ``full`` only, never ``label``."""
+    """DataLoader -> Adapting -> score. Adapting gets ``image`` and ``full`` only, never ``label``.
+    Logs into the active MLflow run (run.py opens it and logs the hyperparameters)."""
 
     def __init__(self, loader: DataLoader, adapting: Adapting, method: str = "crop_teach") -> None:
         self.loader = loader
@@ -91,22 +114,32 @@ class EvaluateAdapting:
         structures = self.loader.problem.structures
         result = Result({"problem": self.loader.problem.name, "source": self.loader.source, "method": self.method,
                          "seed": getattr(self.adapting, "seed", None), "stream": self.loader.domains()})
-        start = time.time()
-        for test_image in self.loader:
+        mlflow.log_params({key: str(value) for key, value in result.info.items()})
+        domain, in_domain, points = None, [], 0
+        for step, test_image in enumerate(self.loader):
+            if (test_image.round, test_image.domain) != domain and in_domain:    # a domain just finished
+                mlflow.log_metrics(domain_point(in_domain), step=points)
+                in_domain, points = [], points + 1
+            domain = (test_image.round, test_image.domain)
+            start = time.time()
             prediction = self.adapting(test_image.image, test_image.full)
-            row = {"round": test_image.round, "domain": test_image.domain, "image": test_image.name,
-                   **score(prediction, test_image.label, structures)}
-            last = dict(getattr(self.adapting, "last", {}))
-            for name, teacher in last.pop("teachers", {}).items():
-                row[f"{name}_mean_dsc"] = score(teacher, test_image.label, structures)["mean_dsc"]
-            result.rows.append({**row, **last})
-        result.seconds = time.time() - start
+            result.seconds += time.time() - start
+            scores = {**score(prediction, test_image.label, structures), **getattr(self.adapting, "last", {})}
+            result.rows.append({"round": test_image.round, "domain": test_image.domain, "image": test_image.name,
+                                **scores})
+            in_domain.append(scores)
+            mlflow.log_metrics({**scores, "round": test_image.round}, step=step)
+        if in_domain:
+            mlflow.log_metrics(domain_point(in_domain), step=points)
         result.summarize()
+        mlflow.log_metrics(result.metrics())
+        mlflow.log_dict(result.to_dict(), "result.json")
         return result
 
 
 class EvaluateNonAdapting:
-    """DataLoader -> one frozen Model -> score: source only (the target ResUNet34) or the SAM head alone."""
+    """DataLoader -> one frozen Model -> score: source only (the target ResUNet34) or the SAM head alone.
+    Logs into the active MLflow run (run.py opens it)."""
 
     def __init__(self, loader: DataLoader, model: Model, method: str = "source_only") -> None:
         self.loader = loader
@@ -118,11 +151,24 @@ class EvaluateNonAdapting:
         structures = self.loader.problem.structures
         result = Result({"problem": self.loader.problem.name, "source": self.loader.source, "method": self.method,
                          "stream": self.loader.domains()})
-        start = time.time()
-        for test_image in self.loader:
+        mlflow.log_params({key: str(value) for key, value in result.info.items()})
+        domain, in_domain, points = None, [], 0
+        for step, test_image in enumerate(self.loader):
+            if (test_image.round, test_image.domain) != domain and in_domain:    # a domain just finished
+                mlflow.log_metrics(domain_point(in_domain), step=points)
+                in_domain, points = [], points + 1
+            domain = (test_image.round, test_image.domain)
+            start = time.time()
             prediction = self.model(test_image.image)[0]
+            result.seconds += time.time() - start
+            scores = score(prediction, test_image.label, structures)
             result.rows.append({"round": test_image.round, "domain": test_image.domain, "image": test_image.name,
-                                **score(prediction, test_image.label, structures)})
-        result.seconds = time.time() - start
+                                **scores})
+            in_domain.append(scores)
+            mlflow.log_metrics({**scores, "round": test_image.round}, step=step)
+        if in_domain:
+            mlflow.log_metrics(domain_point(in_domain), step=points)
         result.summarize()
+        mlflow.log_metrics(result.metrics())
+        mlflow.log_dict(result.to_dict(), "result.json")
         return result

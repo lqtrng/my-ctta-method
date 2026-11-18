@@ -14,7 +14,6 @@ a DataLoader class, and subclass of DataLoader will dictate the order of test im
 
 An evaluate_non_adapting class
 An evaluate_adapting class orchestrate subclass of DataLoader and Adapting to score.
-
 ---------
 Move everything outside crop_teach to an archive folder except for the README.md and two
 Make a seperate and independent refactor_crop_teach folder

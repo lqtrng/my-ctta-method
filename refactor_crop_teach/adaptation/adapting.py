@@ -34,8 +34,7 @@ class Adapting:
         self.region_proposal = region_proposal or PerRegionSquare()
         self.fusion = fusion or MostForeground()
         self.learning = learning or CropTeachLearning()
-        # What the last step saw, for the evaluator: loss, consensus, number of crops, and the two
-        # frozen teachers' own class probabilities (C x S x S), scorable at no extra cost.
+        # What the last adaptation step did: loss, consensus and number of crops.
         self.last: dict = {}
 
     def __call__(self, image: torch.Tensor, full: torch.Tensor) -> torch.Tensor:
@@ -45,11 +44,10 @@ class Adapting:
             supervision_1 = self.full_model(image)                                   # [2]
             regions = self.region_proposal.propose(supervision_1, full)              # [3]
             predictions = [self.crop_model(region.crop) for region in regions]       # [4]
-            supervision_2, merged = self.fusion.fuse(predictions, regions, size)     # [5]
+            supervision_2, _ = self.fusion.fuse(predictions, regions, size)          # [5]
         outcome = self.learning.step(self.target_model, image, supervision_1, supervision_2)  # [6]
         self.target_model.eval()
         with torch.no_grad():
             prediction = self.target_model(image)[0]                                 # [7]
-        self.last = {**outcome, "crops": len(regions),
-                     "teachers": {"head_alone": supervision_1[0], "crop_teacher": merged[0]}}
+        self.last = {**outcome, "crops": len(regions)}
         return prediction
