@@ -1,0 +1,6 @@
+data/
+models/
+checkpoints/
+runs/
+__pycache__/
+.pytest_cache/
